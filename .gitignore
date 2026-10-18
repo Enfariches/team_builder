@@ -31,3 +31,7 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Сгенерированный код (make gen)
+backend/internal/api/gen/
+backend/internal/*/sqlc/db/

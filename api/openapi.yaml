@@ -1,0 +1,1923 @@
+openapi: 3.0.3
+
+info:
+  title: TeamBuilder API
+  description: |
+    API сервиса формирования студенческих проектных команд.
+
+    Преподаватель создаёт пространство (split), задаёт правила состава команды
+    (размер и роли с квотами), рассылает инвайт-ссылку. Студенты вступают,
+    приложив анкету компетенций. По кнопке или по таймеру запускается
+    распределение по командам.
+
+    Документ является источником истины для фронтенда и тестирования.
+    Любое изменение — отдельным PR с уведомлением команды.
+  version: 2.0.0
+  contact:
+    name: TeamBuilder
+    email: hello@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальный запуск (docker compose up)
+
+tags:
+  - name: Health
+    description: Проверка доступности сервиса
+  - name: Auth
+    description: Регистрация, вход, обновление токена, выход
+  - name: Users
+    description: Профиль пользователя
+  - name: Forms
+    description: Анкеты компетенций
+  - name: Splits
+    description: Пространства распределения
+  - name: Invites
+    description: Инвайт-ссылки
+  - name: Members
+    description: Участники распределения
+  - name: Distribution
+    description: Запуск распределения и публикация результата
+  - name: Teams
+    description: Результат распределения
+  - name: Test
+    description: Служебные методы, доступны только при APP_ENV=test
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  # ─────────────────────────────── Health ───────────────────────────────
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Проверка доступности сервиса
+      description: Возвращает статус сервиса и доступность базы данных.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Сервис доступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ──────────────────────────────── Auth ────────────────────────────────
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация пользователя
+      description: Создаёт пользователя и сразу возвращает пару токенов.
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Пользователь создан
+          headers:
+            Set-Cookie:
+              description: refresh_token, httpOnly, Secure, SameSite=Lax, Path=/api/v1/auth, 30 дней
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Логин уже занят
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: login_taken
+                message: Пользователь с таким логином уже существует
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход в систему
+      description: |
+        Возвращает access-токен (30 минут) в теле ответа и refresh-токен
+        в httpOnly-cookie.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Успешный вход
+          headers:
+            Set-Cookie:
+              description: refresh_token, httpOnly, Secure, SameSite=Lax
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Неверный логин или пароль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: invalid_credentials
+                message: Неверный логин или пароль
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Обновление access-токена
+      description: |
+        Использует refresh-токен из cookie. Access-токен не требуется.
+        Refresh-токен одноразовый: при обновлении выдаётся новый, старый
+        отзывается. Повторное предъявление уже использованного токена
+        отзывает всю цепочку, пользователю придётся войти заново.
+      operationId: refreshToken
+      parameters:
+        - name: refresh_token
+          in: cookie
+          required: false
+          schema:
+            type: string
+      security: []
+      responses:
+        '200':
+          description: Новая пара токенов
+          headers:
+            Set-Cookie:
+              description: новый refresh_token (ротация), httpOnly, Secure, SameSite=Lax, Path=/api/v1/auth, 30 дней
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выход из системы
+      description: Отзывает refresh-токен и очищает cookie.
+      operationId: logout
+      parameters:
+        - name: refresh_token
+          in: cookie
+          required: false
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Выход выполнен
+          headers:
+            Set-Cookie:
+              description: Очищенный refresh_token (Max-Age=0)
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ──────────────────────────────── Users ───────────────────────────────
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Текущий пользователь
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: Профиль пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    patch:
+      tags: [Users]
+      summary: Обновление профиля
+      description: Обновляет ФИО и ссылку на соцсеть. Передаются только изменяемые поля.
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: Обновлённый профиль
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # ──────────────────────────────── Forms ───────────────────────────────
+
+  /forms:
+    get:
+      tags: [Forms]
+      summary: Список своих анкет
+      description: Возвращает только анкеты текущего пользователя.
+      operationId: listForms
+      responses:
+        '200':
+          description: Список анкет
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Form'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Forms]
+      summary: Создание анкеты
+      description: |
+        Анкета переиспользуется между пространствами. При вступлении
+        в пространство её снимок замораживается в участнике, поэтому
+        последующее редактирование анкеты не влияет на уже идущие распределения.
+      operationId: createForm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FormCreate'
+      responses:
+        '201':
+          description: Анкета создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Form'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /forms/{formId}:
+    parameters:
+      - $ref: '#/components/parameters/FormId'
+
+    get:
+      tags: [Forms]
+      summary: Получение анкеты
+      description: Чужая анкета возвращает 404, а не 403 — наличие ресурса не раскрывается.
+      operationId: getForm
+      responses:
+        '200':
+          description: Анкета
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Form'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags: [Forms]
+      summary: Обновление анкеты
+      description: |
+        Разрешено всегда, в том числе если анкета уже использована
+        в распределении: участники хранят замороженный снимок.
+      operationId: updateForm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FormUpdate'
+      responses:
+        '200':
+          description: Обновлённая анкета
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Form'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      tags: [Forms]
+      summary: Удаление анкеты
+      operationId: deleteForm
+      responses:
+        '204':
+          description: Анкета удалена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ──────────────────────────────── Splits ──────────────────────────────
+
+  /splits:
+    get:
+      tags: [Splits]
+      summary: Список своих пространств
+      description: Пространства, где пользователь владелец или участник.
+      operationId: listSplits
+      parameters:
+        - name: role
+          in: query
+          description: Фильтр по роли пользователя в пространстве
+          schema:
+            type: string
+            enum: [owner, member]
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/SplitStatus'
+      responses:
+        '200':
+          description: Список пространств
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Split'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Splits]
+      summary: Создание пространства
+      description: |
+        Создатель становится владельцем. Пространство создаётся в статусе Draft.
+
+        Проверяется выполнимость правил состава:
+        `sum(perTeamMin) <= teamSize <= sum(perTeamMax)`.
+        При нарушении возвращается 422 с перечнем проблем.
+      operationId: createSplit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SplitCreate'
+      responses:
+        '201':
+          description: Пространство создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Split'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Правила состава невыполнимы
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: invalid_team_rules
+                message: Правила состава команды невыполнимы
+                details:
+                  - field: teamSize
+                    message: сумма минимальных квот (6) больше размера команды (5)
+
+  /splits/{splitId}:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+
+    get:
+      tags: [Splits]
+      summary: Получение пространства
+      description: |
+        Участник видит основные сведения и счётчик участников.
+        Владелец дополнительно видит поля блока `ownerView`.
+      operationId: getSplit
+      responses:
+        '200':
+          description: Пространство
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Split'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags: [Splits]
+      summary: Обновление пространства
+      description: |
+        Только владелец. Правила состава (`teamSize`, `roles`) можно менять
+        только в статусе Draft — в Open это сломало бы уже вступивших участников.
+      operationId: updateSplit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SplitUpdate'
+      responses:
+        '200':
+          description: Обновлённое пространство
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Split'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Изменение недопустимо в текущем статусе
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: invalid_status_for_update
+                message: Правила состава нельзя менять после открытия пространства
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      tags: [Splits]
+      summary: Удаление пространства
+      description: Только владелец. Удаляет участников, команды и инвайты.
+      operationId: deleteSplit
+      responses:
+        '204':
+          description: Пространство удалено
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /splits/{splitId}/status:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    post:
+      tags: [Splits]
+      summary: Смена статуса пространства
+      description: |
+        Только владелец. Допустимые переходы:
+
+        - `Draft -> Open` — открыть набор участников
+        - `Open -> Closed` — закрыть набор, не запуская распределение
+        - `Closed -> Open` — снова открыть набор
+
+        Переход в `Finished` выполняется только через публикацию распределения.
+      operationId: changeSplitStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  $ref: '#/components/schemas/SplitStatus'
+      responses:
+        '200':
+          description: Статус изменён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Split'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Недопустимый переход статуса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: invalid_status_transition
+                message: Переход из Finished в Open недопустим
+
+  /splits/{splitId}/stream:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    get:
+      tags: [Splits]
+      summary: Поток событий лобби (SSE)
+      description: |
+        Server-Sent Events. Типы событий:
+
+        - `member_joined` — изменился состав лобби, данные: `{ membersCount }`
+        - `status_changed` — данные: `{ status }`
+        - `distribution_published` — результат опубликован, данные: `{ runId }`
+        - `ping` — keep-alive каждые 20 секунд
+      operationId: streamSplit
+      responses:
+        '200':
+          description: Поток событий
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────── Invites ──────────────────────────────
+
+  /splits/{splitId}/invites:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+
+    get:
+      tags: [Invites]
+      summary: Список инвайтов пространства
+      description: Только владелец.
+      operationId: listInvites
+      responses:
+        '200':
+          description: Список инвайтов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Invite'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [Invites]
+      summary: Создание инвайт-ссылки
+      description: Только владелец. Возвращает токен и готовую ссылку для рассылки.
+      operationId: createInvite
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteCreate'
+      responses:
+        '201':
+          description: Инвайт создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invite'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /splits/{splitId}/invites/{inviteId}:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+      - name: inviteId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    delete:
+      tags: [Invites]
+      summary: Отзыв инвайт-ссылки
+      operationId: revokeInvite
+      responses:
+        '204':
+          description: Инвайт отозван
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /invites/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+        example: a1b2c3d4e5f6
+    get:
+      tags: [Invites]
+      summary: Предпросмотр приглашения
+      description: |
+        Публичный метод. Позволяет показать студенту название пространства
+        и правила состава до входа в систему.
+      operationId: previewInvite
+      security: []
+      responses:
+        '200':
+          description: Сведения о приглашении
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitePreview'
+        '404':
+          description: Инвайт не найден, отозван или истёк
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ─────────────────────────────── Members ──────────────────────────────
+
+  /members/join:
+    post:
+      tags: [Members]
+      summary: Вступление в пространство по инвайту
+      description: |
+        Проверяется: валидность токена, статус пространства `Open`,
+        наличие свободных мест, отсутствие повторного вступления.
+        Снимок анкеты сохраняется в участнике.
+      operationId: joinSplit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JoinRequest'
+      responses:
+        '201':
+          description: Участие создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Инвайт недействителен или анкета не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Повторное вступление, закрытый набор или нет свободных мест
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                already_member:
+                  value:
+                    code: already_member
+                    message: Вы уже участвуете в этом распределении
+                split_full:
+                  value:
+                    code: split_full
+                    message: Свободных мест больше нет
+                split_not_open:
+                  value:
+                    code: split_not_open
+                    message: Набор участников закрыт
+
+  /splits/{splitId}/members:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    get:
+      tags: [Members]
+      summary: Список участников пространства
+      description: |
+        Только владелец. Содержит сведения о заполненности анкет
+        и предпочтениях по ролям. Обычный участник получает 403.
+      operationId: listSplitMembers
+      responses:
+        '200':
+          description: Участники
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MemberDetailed'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /splits/{splitId}/members/me:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+
+    get:
+      tags: [Members]
+      summary: Моё участие в пространстве
+      operationId: getMyMembership
+      responses:
+        '200':
+          description: Участие
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Members]
+      summary: Выход из пространства
+      description: Доступен, пока распределение не опубликовано.
+      operationId: leaveSplit
+      responses:
+        '204':
+          description: Участие прекращено
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Распределение уже завершено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /members/{memberId}:
+    parameters:
+      - name: memberId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+
+    patch:
+      tags: [Members]
+      summary: Ручная корректировка участника
+      description: |
+        Только владелец. Позволяет перенести участника в другую команду
+        или изменить назначенную роль после распределения.
+        Нарушение квот допускается, но возвращается предупреждение в теле ответа.
+      operationId: updateMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberUpdate'
+      responses:
+        '200':
+          description: Участник обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Members]
+      summary: Исключение участника
+      description: Только владелец.
+      operationId: removeMember
+      responses:
+        '204':
+          description: Участник исключён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────────── Distribution ───────────────────────────
+
+  /splits/{splitId}/distribution/preview:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    post:
+      tags: [Distribution]
+      summary: Пробный прогон распределения
+      description: |
+        Только владелец. Выполняет распределение и возвращает результат,
+        **не публикуя его**: участники ничего не видят, статус не меняется.
+
+        Прогон детерминирован: одинаковый `seed` на одном и том же составе
+        даёт идентичный результат. Если `seed` не передан, генерируется
+        случайный и возвращается в ответе — его можно переиспользовать.
+      operationId: previewDistribution
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DistributionRequest'
+      responses:
+        '200':
+          description: Результат прогона
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistributionRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Распределение невозможно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                not_enough_members:
+                  value:
+                    code: not_enough_members
+                    message: Участников меньше, чем требуется для одной команды
+                already_finished:
+                  value:
+                    code: already_finished
+                    message: Распределение уже завершено
+
+  /splits/{splitId}/distribution/publish:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    post:
+      tags: [Distribution]
+      summary: Публикация результата распределения
+      description: |
+        Только владелец. Операция идемпотентна: повторный вызов и срабатывание
+        таймера одновременно с нажатием кнопки не создают второй набор команд —
+        возвращается уже опубликованный результат.
+
+        Если `runId` передан, публикуется ранее сделанный прогон.
+        Если нет — выполняется новый прогон и сразу публикуется.
+        Пространство переходит в статус `Finished`.
+      operationId: publishDistribution
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                runId:
+                  type: integer
+                  format: int64
+                  description: Идентификатор прогона из preview
+      responses:
+        '200':
+          description: Результат опубликован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistributionRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Распределение невозможно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /splits/{splitId}/distribution/runs:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    get:
+      tags: [Distribution]
+      summary: История прогонов распределения
+      description: Только владелец. Позволяет сравнить варианты и вернуться к прошлому.
+      operationId: listDistributionRuns
+      responses:
+        '200':
+          description: История прогонов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DistributionRunSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ──────────────────────────────── Teams ───────────────────────────────
+
+  /splits/{splitId}/teams:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    get:
+      tags: [Teams]
+      summary: Все команды распределения
+      description: Только владелец. Доступно после публикации результата.
+      operationId: listSplitTeams
+      responses:
+        '200':
+          description: Команды с составами
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Team'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Распределение ещё не опубликовано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: split_not_finished
+                message: Распределение ещё не опубликовано
+
+  /splits/{splitId}/teams/me:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    get:
+      tags: [Teams]
+      summary: Моя команда
+      description: |
+        Возвращает команду текущего пользователя с составом и контактами
+        сокомандников. Анкеты других участников не раскрываются.
+      operationId: getMyTeam
+      responses:
+        '200':
+          description: Моя команда
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Пользователь не распределён в команду
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Распределение ещё не опубликовано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /splits/{splitId}/teams/export:
+    parameters:
+      - $ref: '#/components/parameters/SplitId'
+    get:
+      tags: [Teams]
+      summary: Выгрузка результата
+      description: Только владелец. CSV со списком команд и их составов.
+      operationId: exportTeams
+      responses:
+        '200':
+          description: Файл выгрузки
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Распределение ещё не опубликовано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ──────────────────────────────── Test ────────────────────────────────
+
+  /test/reset:
+    post:
+      tags: [Test]
+      summary: Сброс базы к сид-данным
+      description: |
+        Удаляет все данные и накатывает фиксированный тестовый набор.
+        Доступен только при `APP_ENV=test`, в остальных случаях 404.
+      operationId: resetTestData
+      security: []
+      responses:
+        '204':
+          description: База сброшена
+        '404':
+          description: Метод недоступен в текущем окружении
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access-токен, полученный при входе. Живёт 30 минут.
+
+  parameters:
+    SplitId:
+      name: splitId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      example: 42
+    FormId:
+      name: formId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      example: 11
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: bad_request
+            message: Некорректное тело запроса
+    Unauthorized:
+      description: Требуется авторизация
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: unauthorized
+            message: Токен отсутствует, недействителен или истёк
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: forbidden
+            message: Действие доступно только владельцу пространства
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: not_found
+            message: Ресурс не найден
+    UnprocessableEntity:
+      description: Ошибка валидации
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: validation_failed
+            message: Проверьте правильность заполнения полей
+            details:
+              - field: login
+                message: должен содержать от 3 до 64 символов
+    ServiceUnavailable:
+      description: Сервис недоступен
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+
+    # ── Общее ──────────────────────────────────────────────────────────
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Машиночитаемый код ошибки
+          example: validation_failed
+        message:
+          type: string
+          description: Человекочитаемое описание
+          example: Проверьте правильность заполнения полей
+        details:
+          type: array
+          description: Пофайловая расшифровка для ошибок валидации
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        requestId:
+          type: string
+          description: Идентификатор запроса для поиска в журнале
+          example: 01JBX4E8K2
+
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          example: ok
+        database:
+          type: string
+          enum: [up, down]
+          example: up
+        version:
+          type: string
+          example: 2.0.0
+
+    # ── Auth и пользователи ────────────────────────────────────────────
+
+    RegisterRequest:
+      type: object
+      required: [login, password, firstName, lastName]
+      properties:
+        login:
+          type: string
+          minLength: 3
+          maxLength: 64
+          example: spushkin
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        firstName:
+          type: string
+          maxLength: 255
+          example: Александр
+        middleName:
+          type: string
+          maxLength: 255
+          example: Сергеевич
+        lastName:
+          type: string
+          maxLength: 255
+          example: Пушкин
+        link:
+          type: string
+          maxLength: 255
+          description: Контакт для связи внутри команды
+          example: '@spushkin_tg'
+
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login:
+          type: string
+          example: spushkin
+        password:
+          type: string
+          format: password
+
+    AuthTokens:
+      type: object
+      required: [accessToken, expiresIn, user]
+      properties:
+        accessToken:
+          type: string
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        expiresIn:
+          type: integer
+          description: Время жизни access-токена в секундах
+          example: 1800
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 10
+        login:
+          type: string
+          example: spushkin
+        firstName:
+          type: string
+          example: Александр
+        middleName:
+          type: string
+          nullable: true
+          example: Сергеевич
+        lastName:
+          type: string
+          example: Пушкин
+        link:
+          type: string
+          nullable: true
+          example: '@spushkin_tg'
+        createdAt:
+          type: string
+          format: date-time
+
+    UserUpdate:
+      type: object
+      properties:
+        firstName:
+          type: string
+          maxLength: 255
+        middleName:
+          type: string
+          nullable: true
+          maxLength: 255
+        lastName:
+          type: string
+          maxLength: 255
+        link:
+          type: string
+          nullable: true
+          maxLength: 255
+
+    # ── Анкеты ─────────────────────────────────────────────────────────
+
+    Form:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 11
+        name:
+          type: string
+          description: Название анкеты, видно только владельцу
+          example: Основная анкета
+        experience:
+          type: integer
+          minimum: 0
+          maximum: 10
+          description: Опыт в условных единицах, используется для выравнивания команд
+          example: 3
+        skills:
+          type: array
+          items:
+            type: string
+          example: [Go, PostgreSQL, Docker]
+        rolePreferences:
+          type: array
+          description: Желаемые роли в порядке приоритета
+          items:
+            $ref: '#/components/schemas/RolePreference'
+        comment:
+          type: string
+          nullable: true
+          description: Свободный комментарий для преподавателя
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RolePreference:
+      type: object
+      required: [roleName, rank]
+      properties:
+        roleName:
+          type: string
+          description: Название роли; сопоставляется с ролями пространства при вступлении
+          example: Backend
+        rank:
+          type: integer
+          minimum: 1
+          description: 1 — наиболее желаемая роль
+          example: 1
+
+    FormCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        experience:
+          type: integer
+          minimum: 0
+          maximum: 10
+        skills:
+          type: array
+          items:
+            type: string
+        rolePreferences:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolePreference'
+        comment:
+          type: string
+          nullable: true
+
+    FormUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        experience:
+          type: integer
+          minimum: 0
+          maximum: 10
+        skills:
+          type: array
+          items:
+            type: string
+        rolePreferences:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolePreference'
+        comment:
+          type: string
+          nullable: true
+
+    # ── Пространства ───────────────────────────────────────────────────
+
+    SplitStatus:
+      type: string
+      description: |
+        - `Draft` — настраивается, участники не вступают
+        - `Open` — идёт набор
+        - `Closed` — набор закрыт, распределение не опубликовано
+        - `Finished` — результат опубликован
+      enum: [Draft, Open, Closed, Finished]
+      example: Open
+
+    RemainderPolicy:
+      type: string
+      description: |
+        Что делать, когда число участников не делится на размер команды:
+
+        - `smaller_last_team` — последняя команда меньше остальных
+        - `spread` — лишних распределить по командам сверх размера
+        - `waitlist` — оставить в листе ожидания без команды
+      enum: [smaller_last_team, spread, waitlist]
+      default: spread
+      example: spread
+
+    SplitRole:
+      type: object
+      required: [name, perTeamMin, perTeamMax]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 255
+          example: Backend
+        perTeamMin:
+          type: integer
+          minimum: 0
+          description: Минимум людей этой роли в команде
+          example: 1
+        perTeamMax:
+          type: integer
+          minimum: 1
+          description: Максимум людей этой роли в команде
+          example: 2
+        sortOrder:
+          type: integer
+          example: 1
+
+    SplitRoleInput:
+      type: object
+      required: [name, perTeamMin, perTeamMax]
+      properties:
+        name:
+          type: string
+          maxLength: 255
+        perTeamMin:
+          type: integer
+          minimum: 0
+        perTeamMax:
+          type: integer
+          minimum: 1
+        sortOrder:
+          type: integer
+
+    Split:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 42
+        title:
+          type: string
+          example: Проектный практикум, 3 курс
+        description:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/SplitStatus'
+        teamSize:
+          type: integer
+          minimum: 1
+          description: Целевой размер команды
+          example: 5
+        maxMembers:
+          type: integer
+          nullable: true
+          description: Вместимость пространства; null — без ограничения
+          example: 30
+        remainderPolicy:
+          $ref: '#/components/schemas/RemainderPolicy'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/SplitRole'
+        autoFinishAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Время автоматического распределения; null — только вручную
+        membersCount:
+          type: integer
+          example: 17
+        teamsCount:
+          type: integer
+          nullable: true
+          description: Число команд; заполняется после публикации
+        ownerId:
+          type: integer
+          format: int64
+        myRole:
+          type: string
+          enum: [Owner, Member]
+          description: Роль текущего пользователя в этом пространстве
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    SplitCreate:
+      type: object
+      required: [title, teamSize, roles]
+      properties:
+        title:
+          type: string
+          maxLength: 255
+          example: Проектный практикум, 3 курс
+        description:
+          type: string
+          nullable: true
+        teamSize:
+          type: integer
+          minimum: 1
+          example: 5
+        maxMembers:
+          type: integer
+          nullable: true
+          minimum: 1
+          example: 30
+        remainderPolicy:
+          $ref: '#/components/schemas/RemainderPolicy'
+        roles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SplitRoleInput'
+          example:
+            - name: Backend
+              perTeamMin: 1
+              perTeamMax: 2
+            - name: Frontend
+              perTeamMin: 1
+              perTeamMax: 2
+            - name: Designer
+              perTeamMin: 1
+              perTeamMax: 1
+            - name: Analyst
+              perTeamMin: 0
+              perTeamMax: 1
+        autoFinishAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    SplitUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          nullable: true
+        teamSize:
+          type: integer
+          minimum: 1
+        maxMembers:
+          type: integer
+          nullable: true
+        remainderPolicy:
+          $ref: '#/components/schemas/RemainderPolicy'
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/SplitRoleInput'
+        autoFinishAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ── Инвайты ────────────────────────────────────────────────────────
+
+    Invite:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        token:
+          type: string
+          example: a1b2c3d4e5f6
+        url:
+          type: string
+          description: Готовая ссылка для рассылки студентам
+          example: http://localhost:3000/join/a1b2c3d4e5f6
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        maxUses:
+          type: integer
+          nullable: true
+        usesCount:
+          type: integer
+          example: 17
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    InviteCreate:
+      type: object
+      properties:
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        maxUses:
+          type: integer
+          nullable: true
+          minimum: 1
+
+    InvitePreview:
+      type: object
+      description: Публичные сведения о пространстве по инвайт-ссылке
+      properties:
+        splitTitle:
+          type: string
+          example: Проектный практикум, 3 курс
+        splitDescription:
+          type: string
+          nullable: true
+        teamSize:
+          type: integer
+          example: 5
+        roleNames:
+          type: array
+          items:
+            type: string
+          example: [Backend, Frontend, Designer, Analyst]
+        membersCount:
+          type: integer
+        status:
+          $ref: '#/components/schemas/SplitStatus'
+
+    # ── Участники ──────────────────────────────────────────────────────
+
+    MemberRole:
+      type: string
+      enum: [Owner, Member]
+      example: Member
+
+    Member:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        splitId:
+          type: integer
+          format: int64
+        userId:
+          type: integer
+          format: int64
+        user:
+          $ref: '#/components/schemas/UserBrief'
+        role:
+          $ref: '#/components/schemas/MemberRole'
+        formId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Исходная анкета; её изменение не влияет на распределение
+        teamId:
+          type: integer
+          format: int64
+          nullable: true
+          description: null, пока распределение не опубликовано
+        assignedRole:
+          type: string
+          nullable: true
+          description: Роль, назначенная алгоритмом
+          example: Backend
+        joinedAt:
+          type: string
+          format: date-time
+
+    MemberDetailed:
+      allOf:
+        - $ref: '#/components/schemas/Member'
+        - type: object
+          properties:
+            formSnapshot:
+              type: object
+              description: Замороженный снимок анкеты на момент вступления
+              properties:
+                experience:
+                  type: integer
+                skills:
+                  type: array
+                  items:
+                    type: string
+                rolePreferences:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/RolePreference'
+                comment:
+                  type: string
+                  nullable: true
+
+    MemberUpdate:
+      type: object
+      properties:
+        teamId:
+          type: integer
+          format: int64
+          nullable: true
+        assignedRole:
+          type: string
+          nullable: true
+
+    UserBrief:
+      type: object
+      description: Публичные сведения о пользователе, видимые сокомандникам
+      properties:
+        id:
+          type: integer
+          format: int64
+        firstName:
+          type: string
+          example: Александр
+        lastName:
+          type: string
+          example: Пушкин
+        link:
+          type: string
+          nullable: true
+          example: '@spushkin_tg'
+
+    JoinRequest:
+      type: object
+      required: [inviteToken, formId]
+      properties:
+        inviteToken:
+          type: string
+          example: a1b2c3d4e5f6
+        formId:
+          type: integer
+          format: int64
+          description: Анкета, с которой пользователь вступает
+          example: 11
+
+    # ── Распределение ──────────────────────────────────────────────────
+
+    DistributionRequest:
+      type: object
+      properties:
+        seed:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Зерно генератора. Одинаковый seed на одном составе даёт
+            идентичный результат. Если не передано — генерируется случайное
+            и возвращается в ответе.
+          example: 20261018
+        algorithm:
+          type: string
+          enum: [greedy_v1]
+          default: greedy_v1
+
+    DistributionRun:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        splitId:
+          type: integer
+          format: int64
+        algorithm:
+          type: string
+          example: greedy_v1
+        seed:
+          type: integer
+          format: int64
+          example: 20261018
+        published:
+          type: boolean
+          example: false
+        metrics:
+          $ref: '#/components/schemas/DistributionMetrics'
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/Team'
+        waitlist:
+          type: array
+          description: Участники без команды при политике waitlist
+          items:
+            $ref: '#/components/schemas/UserBrief'
+        createdAt:
+          type: string
+          format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    DistributionRunSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        algorithm:
+          type: string
+        seed:
+          type: integer
+          format: int64
+        published:
+          type: boolean
+        metrics:
+          $ref: '#/components/schemas/DistributionMetrics'
+        createdAt:
+          type: string
+          format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    DistributionMetrics:
+      type: object
+      description: Показатели качества распределения для сравнения вариантов
+      properties:
+        teamsCount:
+          type: integer
+          example: 6
+        membersAssigned:
+          type: integer
+          example: 29
+        membersWaitlisted:
+          type: integer
+          example: 1
+        roleQuotasSatisfied:
+          type: boolean
+          description: Все минимальные и максимальные квоты по ролям соблюдены
+          example: true
+        firstChoiceRoleShare:
+          type: number
+          format: float
+          description: Доля участников, получивших роль первого приоритета
+          example: 0.79
+        experienceSpread:
+          type: number
+          format: float
+          description: Разброс среднего опыта между командами; меньше — ровнее
+          example: 0.42
+
+    # ── Команды ────────────────────────────────────────────────────────
+
+    Team:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        splitId:
+          type: integer
+          format: int64
+        name:
+          type: string
+          example: Команда 1
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamMember'
+        createdAt:
+          type: string
+          format: date-time
+
+    TeamMember:
+      type: object
+      properties:
+        memberId:
+          type: integer
+          format: int64
+        user:
+          $ref: '#/components/schemas/UserBrief'
+        assignedRole:
+          type: string
+          nullable: true
+          example: Backend

@@ -1,0 +1,7 @@
+package: gen
+output: internal/api/gen/api.gen.go
+generate:
+  models: true
+  echo5-server: true
+  strict-server: true
+  embedded-spec: true
