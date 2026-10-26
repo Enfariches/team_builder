@@ -1,18 +1,19 @@
 # Чеклист готовности backend
 
-Составлен по `api/openapi.yaml` (36 операций). Отмечено сделанное на 2026-10-26.
+Составлен по `api/openapi.yaml` (36 операций). Отмечено сделанное на 2026-10-26, после `split` обновлено.
 
 ## Итог
 
 | Метрика | Значение |
 |---|---|
-| Операций API реализовано | 7 из 36 (19%) |
-| Готовность с учётом сложности | ≈ 13% |
+| Операций API реализовано | 14 из 36 (39%) |
+| Готовность с учётом сложности | ≈ 30% |
 
 Оценка по сложности: веса модулей — auth 4, users 2, forms 5, splits 9 (правила
 состава, переходы статусов, SSE), invites 4, members 8, distribution 12
 (алгоритм и property-based тесты), teams 3, health 0.5, тестовая обвязка 2.
-Готово 6.5 из ≈ 49.5.
+Готово 14.6 из ≈ 49.5: `split` засчитан на 90% (веса: 9 × 0.9), пока нет событий
+`member_joined` и `distribution_published` и реальных участников.
 
 ## Инфраструктура
 
@@ -52,17 +53,19 @@
 - [ ] `PATCH /forms/{formId}`
 - [ ] `DELETE /forms/{formId}`
 
-## Splits — 0/7
+## Splits — 7/7
 
-- [ ] Миграции `splits`, `split_roles`
-- [ ] Валидация правил состава (`sum(perTeamMin) <= teamSize <= sum(perTeamMax)` и др.), 422 с `details`
-- [ ] `GET /splits`
-- [ ] `POST /splits`
-- [ ] `GET /splits/{splitId}`
-- [ ] `PATCH /splits/{splitId}`
-- [ ] `DELETE /splits/{splitId}`
-- [ ] `POST /splits/{splitId}/status` (Draft → Open → Closed → Finished)
-- [ ] `GET /splits/{splitId}/stream` (SSE)
+- [x] Миграции `splits`, `split_roles`
+- [x] Валидация правил состава (`sum(perTeamMin) <= teamSize <= sum(perTeamMax)` и др.), 422 `invalid_team_rules` с `details`
+- [x] `GET /splits`
+- [x] `POST /splits`
+- [x] `GET /splits/{splitId}`
+- [x] `PATCH /splits/{splitId}`
+- [x] `DELETE /splits/{splitId}`
+- [x] `POST /splits/{splitId}/status` (Draft → Open → Closed → Open)
+- [x] `GET /splits/{splitId}/stream` (SSE: `status_changed`, `ping`)
+- [ ] События `member_joined` и `distribution_published` (публикуют `member` и `distribution` через `Hub`)
+- [ ] Реальные участники вместо заглушки `memberStub` (`membersCount`, `myRole=Member`, доступ участника)
 
 ## Invites — 0/4
 
@@ -72,7 +75,7 @@
 - [ ] `DELETE /splits/{splitId}/invites/{inviteId}`
 - [ ] `GET /invites/{token}` (предпросмотр)
 
-## Members — 0/7
+## Members — 0/6
 
 - [ ] Миграция `members` (`UNIQUE(split_id, user_id)`, `team_id` и `assigned_role` nullable, `form_snapshot` jsonb)
 - [ ] `POST /members/join` (заморозка анкеты в снимок)
@@ -103,6 +106,7 @@
 - [x] auth: юнит и интеграционные (12 функций)
 - [x] user: юнит, HTTP-разбор тела, интеграционные
 - [ ] HTTP-слой auth (cookie, middleware) автотестами
+- [x] split: правила состава (в том числе сверка с перебором), статусы, доступ, HTTP, SSE, Postgres, гонка смены статуса
 - [ ] Остальные модули
 
 ## Известные долги

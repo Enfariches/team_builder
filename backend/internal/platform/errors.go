@@ -23,6 +23,18 @@ type FieldsError interface {
 	Fields() [][2]string
 }
 
+// CodedError позволяет ошибке валидации заменить общий код validation_failed
+// своим (например, invalid_team_rules). Пустой code оставляет общий.
+type CodedError interface {
+	ErrorCode() (code, message string)
+}
+
+// Messager позволяет доменной ошибке задать динамическое сообщение, не
+// меняя код и статус из ErrorRule.
+type Messager interface {
+	UserMessage() string
+}
+
 type errorBody struct {
 	Code      string        `json:"code"`
 	Message   string        `json:"message"`
@@ -48,21 +60,31 @@ func NewErrorHandler(log *slog.Logger, rules ...ErrorRule) echo.HTTPErrorHandler
 		}
 
 		var fe FieldsError
-		var he *echo.HTTPError
+		var sc echo.HTTPStatusCoder
 		switch {
 		case errors.As(err, &fe):
 			status = http.StatusUnprocessableEntity
 			body = errorBody{Code: "validation_failed", Message: "Проверьте правильность заполнения полей"}
+			if ce, ok := fe.(CodedError); ok {
+				if code, msg := ce.ErrorCode(); code != "" {
+					body.Code, body.Message = code, msg
+				}
+			}
 			for _, f := range fe.Fields() {
 				body.Details = append(body.Details, errorDetail{Field: f[0], Message: f[1]})
 			}
-		case errors.As(err, &he):
-			status = he.Code
-			body = errorBody{Code: httpCode(he.Code), Message: httpMessage(he.Code)}
+		case errors.As(err, &sc):
+			// ошибки роутера и биндинга echo (404, 405, 400) несут свой статус
+			status = sc.StatusCode()
+			body = errorBody{Code: httpCode(status), Message: httpMessage(status)}
 		default:
 			for _, r := range rules {
 				if errors.Is(err, r.Target) {
 					status, body = r.Status, errorBody{Code: r.Code, Message: r.Message}
+					var m Messager
+					if errors.As(err, &m) {
+						body.Message = m.UserMessage()
+					}
 					break
 				}
 			}
@@ -88,6 +110,8 @@ func httpCode(status int) string {
 		return "unauthorized"
 	case http.StatusForbidden:
 		return "forbidden"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
 	default:
 		return "error"
 	}
@@ -103,6 +127,8 @@ func httpMessage(status int) string {
 		return "Токен отсутствует, недействителен или истёк"
 	case http.StatusForbidden:
 		return "Недостаточно прав"
+	case http.StatusMethodNotAllowed:
+		return "Метод не поддерживается"
 	default:
 		return http.StatusText(status)
 	}

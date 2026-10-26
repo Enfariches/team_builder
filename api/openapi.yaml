@@ -397,6 +397,9 @@ paths:
         Проверяется выполнимость правил состава:
         `sum(perTeamMin) <= teamSize <= sum(perTeamMax)`.
         При нарушении возвращается 422 с перечнем проблем.
+
+        Названия ролей (`roles[].name`) уникальны в пределах пространства
+        без учёта регистра. `remainderPolicy` по умолчанию `spread`.
       operationId: createSplit
       requestBody:
         required: true
@@ -405,6 +408,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SplitCreate'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '201':
           description: Пространство создано
           content:
@@ -434,8 +439,8 @@ paths:
       tags: [Splits]
       summary: Получение пространства
       description: |
-        Участник видит основные сведения и счётчик участников.
-        Владелец дополнительно видит поля блока `ownerView`.
+        Владелец и участник видят одни и те же сведения, включая счётчик
+        участников; роль текущего пользователя указана в `myRole`.
       operationId: getSplit
       responses:
         '200':
@@ -465,6 +470,8 @@ paths:
             schema:
               $ref: '#/components/schemas/SplitUpdate'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Обновлённое пространство
           content:
@@ -530,6 +537,8 @@ paths:
                 status:
                   $ref: '#/components/schemas/SplitStatus'
       responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '200':
           description: Статус изменён
           content:
@@ -1603,12 +1612,23 @@ components:
         description:
           type: string
           nullable: true
+          description: '`null` очищает поле; если не передано — не меняется'
+          x-go-type: nullable.Nullable[string]
+          x-go-type-skip-optional-pointer: true
+          x-go-type-import:
+            path: github.com/oapi-codegen/nullable
         teamSize:
           type: integer
           minimum: 1
         maxMembers:
           type: integer
           nullable: true
+          minimum: 1
+          description: '`null` снимает ограничение; если не передано — не меняется'
+          x-go-type: nullable.Nullable[int]
+          x-go-type-skip-optional-pointer: true
+          x-go-type-import:
+            path: github.com/oapi-codegen/nullable
         remainderPolicy:
           $ref: '#/components/schemas/RemainderPolicy'
         roles:
@@ -1619,6 +1639,11 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: '`null` отключает автораспределение; если не передано — не меняется'
+          x-go-type: nullable.Nullable[time.Time]
+          x-go-type-skip-optional-pointer: true
+          x-go-type-import:
+            path: github.com/oapi-codegen/nullable
 
     # ── Инвайты ────────────────────────────────────────────────────────
 

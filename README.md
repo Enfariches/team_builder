@@ -16,9 +16,26 @@ JWT (access 30 минут + refresh в httpOnly-cookie), Argon2id, Docker.
 
 ## Статус
 
-Готово: `auth` (регистрация, вход, обновление и отзыв сессии), `user`
-(`GET` и `PATCH /users/me`), `GET /health`. Остальные методы из спеки пока не
-реализованы.
+**Готовность backend: ≈ 30%** (по числу операций API — 14 из 36, 39%; с учётом
+сложности модулей — ≈ 30%, самая тяжёлая часть, распределение, ещё не начата).
+Подробный список задач — в [docs/checklist.md](docs/checklist.md).
+
+| Сервис | Операции | Готовность | Комментарий |
+|---|---|---|---|
+| health | 1 из 1 | 100% | |
+| auth | 4 из 4 | 100% | регистрация, вход, ротация refresh, выход |
+| user | 2 из 2 | 100% | профиль, частичное обновление |
+| split | 7 из 7 | 90% | события `member_joined` и `distribution_published` и реальные участники ждут модули `member` и `distribution` |
+| forms | 0 из 5 | 0% | анкеты компетенций |
+| invites | 0 из 4 | 0% | инвайт-ссылки |
+| members | 0 из 6 | 0% | вступление, состав, выход |
+| distribution | 0 из 3 | 0% | алгоритм, предпросмотр, публикация |
+| teams | 0 из 3 | 0% | результат и выгрузка |
+| тестовая обвязка | 0 из 1 | 0% | `POST /test/reset`, `make seed` |
+
+Вес модуля в общей оценке пропорционален трудоёмкости: распределение — 12,
+пространства — 9, участники — 8, анкеты — 5, auth и инвайты — по 4, команды — 3,
+профиль и тестовая обвязка — по 2, health — 0,5.
 
 ## Quick start
 
@@ -60,6 +77,13 @@ curl -b cookies.txt -c cookies.txt -X POST localhost:8080/api/v1/auth/refresh
 | POST | `/auth/logout` | Bearer | выход, отзыв refresh и очистка cookie | 204, 401 |
 | GET | `/users/me` | Bearer | профиль текущего пользователя | 200, 401 |
 | PATCH | `/users/me` | Bearer | частичное обновление профиля (`firstName`, `lastName`, `middleName`, `link`) | 200, 400, 401, 422 |
+| GET | `/splits` | Bearer | свои пространства и те, где вы участник; фильтры `role`, `status` | 200, 401 |
+| POST | `/splits` | Bearer | создание (вы становитесь владельцем, статус `Draft`) | 201, 400, 401, 422 `invalid_team_rules` |
+| GET | `/splits/{splitId}` | владелец, участник | пространство с ролями и счётчиками | 200, 401, 404 |
+| PATCH | `/splits/{splitId}` | владелец | частичное обновление; `teamSize` и `roles` только в `Draft` | 200, 400, 401, 403, 404, 409, 422 |
+| DELETE | `/splits/{splitId}` | владелец | удаление | 204, 401, 403, 404 |
+| POST | `/splits/{splitId}/status` | владелец | `Draft→Open`, `Open→Closed`, `Closed→Open` | 200, 400, 401, 403, 404, 409 `invalid_status_transition` |
+| GET | `/splits/{splitId}/stream` | владелец, участник | поток событий SSE | 200, 401, 404 |
 
 Как устроена авторизация:
 - **Access-токен** (JWT, 30 минут) приходит в теле ответа `register`, `login` и
@@ -70,6 +94,22 @@ curl -b cookies.txt -c cookies.txt -X POST localhost:8080/api/v1/auth/refresh
   цепочку, потребуется новый вход.
 - Роли Owner/Member определяются внутри пространства, глобальной роли у
   пользователя нет.
+
+`PATCH /splits/{id}`: `null` в `description`, `maxMembers`, `autoFinishAt` очищает
+значение, отсутствие поля его не меняет. В `Finished` пространство менять нельзя.
+Чужое пространство отвечает 404, а не 403; 403 получает участник, пытающийся
+сделать то, что доступно только владельцу.
+
+`GET /splits/{id}/stream` отдаёт события `status_changed` (`{"status": "Open"}`)
+и `ping` каждые 20 секунд. Авторизация идёт заголовком `Authorization`, поэтому
+браузерный `EventSource` не подойдёт, нужен fetch-стрим:
+
+```bash
+curl -N -H "Authorization: Bearer <accessToken>" localhost:8080/api/v1/splits/1/stream
+```
+
+Пока нет модуля участников, `membersCount` всегда 0, а доступ к пространству
+есть только у владельца (временная заглушка `memberStub` в `cmd/api`).
 
 `PATCH /users/me` меняет только переданные поля. Для `middleName` и `link`
 `null` или пустая строка очищает значение; `firstName` и `lastName` пустыми

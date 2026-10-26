@@ -40,3 +40,23 @@ sql:
               import: time
               type: Time
               pointer: true
+  - engine: postgresql
+    schema: migrations
+    queries: internal/split/sqlc/queries.sql
+    gen:
+      go:
+        package: splitdb
+        out: internal/split/sqlc/db
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true

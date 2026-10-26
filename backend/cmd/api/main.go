@@ -17,6 +17,7 @@ import (
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
 	"builder/backend/internal/platform"
+	"builder/backend/internal/split"
 	"builder/backend/internal/user"
 )
 
@@ -53,22 +54,33 @@ func run(log *slog.Logger, cfg platform.Config) error {
 		return fmt.Errorf("init auth: %w", err)
 	}
 
+	hub := split.NewHub()
+	defer hub.Close()
+	// SSE-потоки живут сколько угодно, поэтому закрываем их по сигналу:
+	// иначе graceful shutdown будет ждать их до таймаута
+	go func() {
+		<-ctx.Done()
+		hub.Close()
+	}()
+	splitSvc := split.NewService(split.NewRepository(pool), split.NewPgTxRunner(pool), memberStub{}, memberStub{}, hub)
+
 	swagger, err := gen.GetSwagger()
 	if err != nil {
 		return fmt.Errorf("load spec: %w", err)
 	}
 
 	srv := &apiServer{
-		authAPI: auth.NewHandler(authSvc, cfg.SecureCookies()),
-		userAPI: user.NewHandler(userSvc, auth.Identity{}),
-		pool:    pool,
+		authAPI:  auth.NewHandler(authSvc, cfg.SecureCookies()),
+		userAPI:  user.NewHandler(userSvc, auth.Identity{}),
+		splitAPI: split.NewHandler(splitSvc, hub, auth.Identity{}, split.DefaultPingInterval),
+		pool:     pool,
 	}
 	strict := gen.NewStrictHandler(srv, []gen.StrictMiddlewareFunc{
 		auth.StrictMiddleware(tokens, publicOperations(swagger)),
 	})
 
 	e := echo.New()
-	e.HTTPErrorHandler = platform.NewErrorHandler(log, append(auth.HTTPErrors, user.HTTPErrors...)...)
+	e.HTTPErrorHandler = platform.NewErrorHandler(log, append(append(auth.HTTPErrors, user.HTTPErrors...), split.HTTPErrors...)...)
 	e.Use(middleware.RequestID(), platform.RequestLogger(log), middleware.Recover())
 	if len(cfg.CORSOrigins) > 0 {
 		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{

@@ -10,6 +10,7 @@ import (
 
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
+	"builder/backend/internal/split"
 	"builder/backend/internal/user"
 )
 
@@ -20,14 +21,16 @@ type notImplemented struct{ gen.StrictServerInterface }
 // Алиасы нужны, чтобы у встроенных обработчиков были разные имена полей:
 // оба типа называются Handler.
 type (
-	authAPI = auth.Handler
-	userAPI = user.Handler
+	authAPI  = auth.Handler
+	userAPI  = user.Handler
+	splitAPI = split.Handler
 )
 
 type apiServer struct {
 	notImplemented
 	*authAPI
 	*userAPI
+	*splitAPI
 	pool *pgxpool.Pool
 }
 
@@ -106,4 +109,17 @@ func mapUserErr(op string, err error) error {
 	default:
 		return fmt.Errorf("userStoreAdapter.%s: %w", op, err)
 	}
+}
+
+// memberStub — временная реализация портов split, пока нет модуля member:
+// участников нет, поэтому доступ есть только у владельцев.
+// TODO(member): заменить реализацией из модуля member.
+type memberStub struct{}
+
+func (memberStub) IsMember(context.Context, int64, int64) (bool, error) { return false, nil }
+
+func (memberStub) SplitIDsOfUser(context.Context, int64) ([]int64, error) { return nil, nil }
+
+func (memberStub) Stats(context.Context, []int64) (map[int64]split.Stats, error) {
+	return map[int64]split.Stats{}, nil
 }
