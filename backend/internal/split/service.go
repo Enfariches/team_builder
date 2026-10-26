@@ -105,26 +105,34 @@ func (s *Service) List(ctx context.Context, userID int64, role *string, status *
 	return list, nil
 }
 
+// Update, Delete и ChangeStatus сначала проверяют доступ и берут счётчики из
+// портов, и только потом открывают транзакцию. Внутри транзакции нельзя
+// обращаться к портам: реализация порта может ходить в тот же пул соединений,
+// и при большом числе параллельных запросов пул исчерпается взаимной
+// блокировкой (каждая транзакция держит соединение и ждёт второе).
+// Владелец пространства не меняется, поэтому проверка до блокировки верна.
+
 func (s *Service) Update(ctx context.Context, userID, id int64, p Patch) (Split, error) {
 	p = p.Normalize()
+	if err := s.checkOwner(ctx, userID, id); err != nil {
+		return Split{}, fmt.Errorf("split.Service.Update: split %d: %w", id, err)
+	}
+	stats, err := s.statsOf(ctx, id)
+	if err != nil {
+		return Split{}, fmt.Errorf("split.Service.Update: split %d: %w", id, err)
+	}
+
 	var sp Split
-	err := s.tx.Run(ctx, func(st Store) error {
+	err = s.tx.Run(ctx, func(st Store) error {
 		cur, err := st.GetForUpdate(ctx, id)
 		if err != nil {
 			return fmt.Errorf("lock split: %w", err)
-		}
-		if err := s.requireOwner(ctx, userID, cur); err != nil {
-			return err
 		}
 		if cur.Status == StatusFinished {
 			return ErrSplitFinished
 		}
 		if cur.Status != StatusDraft && p.ChangesRules(cur) {
 			return ErrRulesLocked
-		}
-		stats, err := s.statsOf(ctx, id)
-		if err != nil {
-			return err
 		}
 		if err := p.Validate(cur, stats.MembersCount); err != nil {
 			return fmt.Errorf("validate patch: %w", err)
@@ -133,24 +141,23 @@ func (s *Service) Update(ctx context.Context, userID, id int64, p Patch) (Split,
 		if err != nil {
 			return fmt.Errorf("update: %w", err)
 		}
-		applyStats(&sp, stats)
 		return nil
 	})
 	if err != nil {
 		return Split{}, fmt.Errorf("split.Service.Update: split %d: %w", id, err)
 	}
+	applyStats(&sp, stats)
 	sp.MyRole = AccessOwner
 	return sp, nil
 }
 
 func (s *Service) Delete(ctx context.Context, userID, id int64) error {
+	if err := s.checkOwner(ctx, userID, id); err != nil {
+		return fmt.Errorf("split.Service.Delete: split %d: %w", id, err)
+	}
 	err := s.tx.Run(ctx, func(st Store) error {
-		cur, err := st.GetForUpdate(ctx, id)
-		if err != nil {
+		if _, err := st.GetForUpdate(ctx, id); err != nil {
 			return fmt.Errorf("lock split: %w", err)
-		}
-		if err := s.requireOwner(ctx, userID, cur); err != nil {
-			return err
 		}
 		if err := st.Delete(ctx, id); err != nil {
 			return fmt.Errorf("delete: %w", err)
@@ -165,14 +172,14 @@ func (s *Service) Delete(ctx context.Context, userID, id int64) error {
 }
 
 func (s *Service) ChangeStatus(ctx context.Context, userID, id int64, to Status) (Split, error) {
+	if err := s.checkOwner(ctx, userID, id); err != nil {
+		return Split{}, fmt.Errorf("split.Service.ChangeStatus: split %d: %w", id, err)
+	}
 	var sp Split
 	err := s.tx.Run(ctx, func(st Store) error {
 		cur, err := st.GetForUpdate(ctx, id)
 		if err != nil {
 			return fmt.Errorf("lock split: %w", err)
-		}
-		if err := s.requireOwner(ctx, userID, cur); err != nil {
-			return err
 		}
 		if !to.Valid() || !cur.Status.CanTransition(to) {
 			return &TransitionError{From: cur.Status, To: to}
@@ -196,6 +203,15 @@ func (s *Service) ChangeStatus(ctx context.Context, userID, id int64, to Status)
 	applyStats(&sp, stats)
 	sp.MyRole = AccessOwner
 	return sp, nil
+}
+
+// checkOwner читает пространство вне транзакции и требует права владельца.
+func (s *Service) checkOwner(ctx context.Context, userID, id int64) error {
+	sp, err := s.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.requireOwner(ctx, userID, sp)
 }
 
 // accessOf: владелец, участник или ErrNotFound (наличие пространства

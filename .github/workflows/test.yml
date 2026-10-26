@@ -16,7 +16,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -50,5 +50,11 @@ jobs:
 
       # Интеграционные тесты сами поднимают Postgres через testcontainers;
       # на ubuntu-latest Docker уже установлен.
+      #   -v         имена тестов и время каждого видно в логе;
+      #   -p 1       пакеты идут по очереди, поэтому вывод не копится в буфере
+      #              до конца пакета и зависший тест виден сразу;
+      #   -timeout   зависший пакет падает через 5 минут со стеками горутин
+      #              (по умолчанию go test ждёт 10 минут).
       - name: Test
-        run: go test -race -count=1 ./backend/...
+        timeout-minutes: 10
+        run: go test -race -count=1 -v -p 1 -timeout 5m ./backend/...

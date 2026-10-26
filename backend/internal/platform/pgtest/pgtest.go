@@ -22,6 +22,15 @@ import (
 // пропускается, а не падает.
 func New(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	return NewWithMaxConns(t, 0)
+}
+
+// NewWithMaxConns ограничивает размер пула (0 — по умолчанию). Маленький пул
+// ловит взаимные блокировки, когда транзакция держит соединение и просит
+// второе из того же пула: на машине с большим числом ядер пула хватает и
+// ошибка не проявляется.
+func NewWithMaxConns(t *testing.T, maxConns int32) *pgxpool.Pool {
+	t.Helper()
 	ctx := context.Background()
 
 	ctr, err := tcpostgres.Run(ctx, "postgres:16",
@@ -39,7 +48,14 @@ func New(t *testing.T) *pgxpool.Pool {
 	}
 	migrate(t, dsn)
 
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

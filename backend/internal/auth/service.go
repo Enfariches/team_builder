@@ -94,13 +94,19 @@ func (s *Service) Login(ctx context.Context, login, password, userAgent string) 
 
 // Refresh ротирует refresh-токен. Повторное предъявление уже отозванного
 // токена означает, что его мог украсть кто-то второй, — отзываем всю цепочку.
+//
+// Пользователя читаем после коммита, а не внутри транзакции: транзакция уже
+// держит соединение из пула, и второй запрос к тому же пулу при большом числе
+// одновременных refresh исчерпывает пул — все ждут друг друга (взаимная
+// блокировка). Правило: внутри tx.Run никаких обращений к пулу через порты.
 func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent string) (Session, error) {
 	if refreshToken == "" {
 		return Session{}, fmt.Errorf("auth.Service.Refresh: refresh cookie is empty: %w", ErrUnauthorized)
 	}
 	var (
-		session Session
-		reused  bool
+		issued rotated
+		userID int64
+		reused bool
 	)
 	err := s.tx.Run(ctx, func(st Store) error {
 		old, err := st.GetForUpdate(ctx, HashRefreshToken(refreshToken))
@@ -120,14 +126,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent string) (
 		if !old.ExpiresAt.After(s.now()) {
 			return fmt.Errorf("refresh token %d expired: %w", old.ID, ErrUnauthorized)
 		}
-		u, err := s.users.GetByID(ctx, old.UserID)
-		if errors.Is(err, ErrUserNotFound) {
-			return fmt.Errorf("user %d of refresh token not found: %w", old.UserID, ErrUnauthorized)
-		}
-		if err != nil {
-			return fmt.Errorf("get user %d: %w", old.UserID, err)
-		}
-		session, err = s.issue(ctx, st, u, old.FamilyID, userAgent, &old.ID)
+		userID = old.UserID
+		issued, err = s.issueRefresh(ctx, st, old.UserID, old.FamilyID, userAgent, &old.ID)
 		if err != nil {
 			return fmt.Errorf("rotate token: %w", err)
 		}
@@ -139,7 +139,15 @@ func (s *Service) Refresh(ctx context.Context, refreshToken, userAgent string) (
 	if reused {
 		return Session{}, fmt.Errorf("auth.Service.Refresh: revoked token reused, family revoked: %w", ErrUnauthorized)
 	}
-	return session, nil
+
+	u, err := s.users.GetByID(ctx, userID)
+	if errors.Is(err, ErrUserNotFound) {
+		return Session{}, fmt.Errorf("auth.Service.Refresh: user %d of refresh token not found: %w", userID, ErrUnauthorized)
+	}
+	if err != nil {
+		return Session{}, fmt.Errorf("auth.Service.Refresh: get user %d: %w", userID, err)
+	}
+	return s.newSession(u, issued)
 }
 
 // Logout идемпотентен: неизвестный или уже отозванный токен — не ошибка.
@@ -166,43 +174,55 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	return nil
 }
 
+// rotated — только что выданный refresh-токен до сборки сессии.
+type rotated struct {
+	token   string
+	expires time.Time
+}
+
 func (s *Service) startSession(ctx context.Context, u User, familyID, userAgent string, replace *int64) (Session, error) {
-	var session Session
+	var issued rotated
 	err := s.tx.Run(ctx, func(st Store) error {
 		var err error
-		session, err = s.issue(ctx, st, u, familyID, userAgent, replace)
+		issued, err = s.issueRefresh(ctx, st, u.ID, familyID, userAgent, replace)
 		return err
 	})
 	if err != nil {
 		return Session{}, fmt.Errorf("auth.Service.startSession: user %d: %w", u.ID, err)
 	}
-	return session, nil
+	return s.newSession(u, issued)
 }
 
-func (s *Service) issue(ctx context.Context, st Store, u User, familyID, userAgent string, replace *int64) (Session, error) {
-	access, err := s.tokens.Issue(u.ID)
+// issueRefresh создаёт запись refresh-токена внутри переданной транзакции.
+func (s *Service) issueRefresh(ctx context.Context, st Store, userID int64, familyID, userAgent string, replace *int64) (rotated, error) {
+	token, hash, err := NewRefreshToken()
 	if err != nil {
-		return Session{}, fmt.Errorf("auth.Service.issue: issue access token: %w", err)
-	}
-	refresh, hash, err := NewRefreshToken()
-	if err != nil {
-		return Session{}, fmt.Errorf("auth.Service.issue: generate refresh token: %w", err)
+		return rotated{}, fmt.Errorf("auth.Service.issueRefresh: generate refresh token: %w", err)
 	}
 	expires := s.now().Add(s.refreshTTL)
 	rec, err := st.Insert(ctx, RefreshToken{
-		UserID: u.ID, Hash: hash, FamilyID: familyID, ExpiresAt: expires,
+		UserID: userID, Hash: hash, FamilyID: familyID, ExpiresAt: expires,
 	}, userAgent)
 	if err != nil {
-		return Session{}, fmt.Errorf("auth.Service.issue: store refresh token: %w", err)
+		return rotated{}, fmt.Errorf("auth.Service.issueRefresh: store refresh token: %w", err)
 	}
 	if replace != nil {
 		if err := st.Revoke(ctx, *replace, &rec.ID); err != nil {
-			return Session{}, fmt.Errorf("auth.Service.issue: revoke replaced token %d: %w", *replace, err)
+			return rotated{}, fmt.Errorf("auth.Service.issueRefresh: revoke replaced token %d: %w", *replace, err)
 		}
+	}
+	return rotated{token: token, expires: expires}, nil
+}
+
+// newSession подписывает access-токен; БД не нужна, поэтому вне транзакции.
+func (s *Service) newSession(u User, r rotated) (Session, error) {
+	access, err := s.tokens.Issue(u.ID)
+	if err != nil {
+		return Session{}, fmt.Errorf("auth.Service.newSession: issue access token: %w", err)
 	}
 	return Session{
 		AccessToken: access, ExpiresIn: s.tokens.TTL(),
-		RefreshToken: refresh, RefreshExpiresAt: expires, User: u,
+		RefreshToken: r.token, RefreshExpiresAt: r.expires, User: u,
 	}, nil
 }
 

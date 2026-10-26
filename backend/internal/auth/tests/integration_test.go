@@ -40,7 +40,9 @@ func (a userAdapter) GetByID(ctx context.Context, id int64) (auth.User, error) {
 }
 
 func TestSessionLifecycleOnPostgres(t *testing.T) {
-	pool := pgtest.New(t)
+	// пул из двух соединений: если Refresh берёт второе соединение внутри
+	// транзакции, параллельные запросы зависают (регрессия взаимной блокировки)
+	pool := pgtest.NewWithMaxConns(t, 2)
 	ctx := context.Background()
 	svc, err := auth.NewService(userAdapter{user.NewService(user.NewRepository(pool))},
 		auth.NewPgTxRunner(pool), auth.NewTokenIssuer([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute), 30*24*time.Hour)
@@ -67,7 +69,9 @@ func TestSessionLifecycleOnPostgres(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if ns, err := svc.Refresh(ctx, s.RefreshToken, "ua"); err == nil {
+			rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if ns, err := svc.Refresh(rctx, s.RefreshToken, "ua"); err == nil {
 				mu.Lock()
 				wins = append(wins, ns)
 				mu.Unlock()
