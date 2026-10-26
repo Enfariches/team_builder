@@ -139,6 +139,14 @@ docker compose logs migrate           # результат миграций
 Сменить уровень: `LOG_LEVEL=info make up`. Найти запрос по `request_id`
 из ответа об ошибке: `docker compose logs api | grep <requestId>`.
 
+## CI
+
+На каждый push и pull request GitHub Actions
+([.github/workflows/test.yml](.github/workflows/test.yml)) устанавливает
+генераторы, генерирует код, проверяет `gofmt` и `go vet`, собирает проект и
+запускает тесты (включая интеграционные с Postgres в Docker). Результат виден
+на вкладке **Actions** репозитория и рядом с коммитом или pull request.
+
 ## Разработка
 
 Сгенерированный код (`backend/internal/api/gen`, `backend/internal/*/sqlc/db`)

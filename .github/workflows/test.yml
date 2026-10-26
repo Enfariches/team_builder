@@ -1,0 +1,54 @@
+name: Tests
+
+# Запускается на каждый push в любую ветку и на каждый pull request.
+on:
+  push:
+  pull_request:
+
+# Новый коммит в ту же ветку отменяет ещё идущую проверку предыдущего.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Версия Go берётся из go.mod; setup-go сам кеширует модули и сборку.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Сгенерированный код в git не хранится, поэтому ставим генераторы
+      # и генерируем его перед сборкой и тестами.
+      - name: Install generators
+        run: make tools
+
+      - name: Generate code
+        run: make gen
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l backend)
+          if [ -n "$unformatted" ]; then
+            echo "Не отформатированы файлы (запустите gofmt -w):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./backend/...
+
+      - name: Build
+        run: go build ./...
+
+      # Интеграционные тесты сами поднимают Postgres через testcontainers;
+      # на ubuntu-latest Docker уже установлен.
+      - name: Test
+        run: go test -race -count=1 ./backend/...
