@@ -17,15 +17,18 @@ import (
 // операции упадёт в nil-интерфейсе, Recover вернёт 500.
 type notImplemented struct{ gen.StrictServerInterface }
 
+// Алиасы нужны, чтобы у встроенных обработчиков были разные имена полей:
+// оба типа называются Handler.
+type (
+	authAPI = auth.Handler
+	userAPI = user.Handler
+)
+
 type apiServer struct {
 	notImplemented
-	*auth.Handler
-	userHandler *user.Handler
-	pool        *pgxpool.Pool
-}
-
-func (s *apiServer) GetCurrentUser(ctx context.Context, req gen.GetCurrentUserRequestObject) (gen.GetCurrentUserResponseObject, error) {
-	return s.userHandler.GetCurrentUser(ctx, req)
+	*authAPI
+	*userAPI
+	pool *pgxpool.Pool
 }
 
 func (s *apiServer) GetHealth(ctx context.Context, _ gen.GetHealthRequestObject) (gen.GetHealthResponseObject, error) {

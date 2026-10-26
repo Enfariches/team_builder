@@ -76,3 +76,36 @@ func toAccount(u userdb.User) Account {
 		PasswordHash: u.PasswordHash,
 	}
 }
+
+func (r *Repository) Update(ctx context.Context, id int64, u ProfileUpdate) (Account, error) {
+	row, err := r.q.UpdateUser(ctx, userdb.UpdateUserParams{
+		ID:            id,
+		FirstName:     u.FirstName,
+		LastName:      u.LastName,
+		SetMiddleName: u.MiddleName.Set,
+		MiddleName:    u.MiddleName.Value,
+		SetLink:       u.Link.Set,
+		Link:          u.Link.Value,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, ErrNotFound
+	}
+	if err != nil {
+		return Account{}, fmt.Errorf("user.repository.Update: %w", err)
+	}
+	return toAccount(row), nil
+}
+
+// ListByIDs возвращает найденных пользователей; отсутствующие id молча
+// пропускаются, решать, что это ошибка, должен вызывающий.
+func (r *Repository) ListByIDs(ctx context.Context, ids []int64) ([]User, error) {
+	rows, err := r.q.ListUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("user.repository.ListByIDs: %w", err)
+	}
+	out := make([]User, len(rows))
+	for i, row := range rows {
+		out[i] = toAccount(row).User
+	}
+	return out, nil
+}

@@ -225,7 +225,11 @@ paths:
     patch:
       tags: [Users]
       summary: Обновление профиля
-      description: Обновляет ФИО и ссылку на соцсеть. Передаются только изменяемые поля.
+      description: |
+        Обновляет ФИО и ссылку на соцсеть. Передаются только изменяемые поля:
+        отсутствующее поле не меняется. Для `middleName` и `link` значение
+        `null` (или пустая строка) очищает поле. `firstName` и `lastName`
+        обязательны в профиле и не могут быть пустыми.
       operationId: updateCurrentUser
       requestBody:
         required: true
@@ -240,6 +244,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
@@ -1304,6 +1310,11 @@ components:
           type: string
           nullable: true
           maxLength: 255
+          description: '`null` или пустая строка очищает поле; если не передано — не меняется'
+          x-go-type: nullable.Nullable[string]
+          x-go-type-skip-optional-pointer: true
+          x-go-type-import:
+            path: github.com/oapi-codegen/nullable
         lastName:
           type: string
           maxLength: 255
@@ -1311,6 +1322,11 @@ components:
           type: string
           nullable: true
           maxLength: 255
+          description: '`null` или пустая строка очищает поле; если не передано — не меняется'
+          x-go-type: nullable.Nullable[string]
+          x-go-type-skip-optional-pointer: true
+          x-go-type-import:
+            path: github.com/oapi-codegen/nullable
 
     # ── Анкеты ─────────────────────────────────────────────────────────
 

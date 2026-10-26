@@ -59,16 +59,16 @@ func run(log *slog.Logger, cfg platform.Config) error {
 	}
 
 	srv := &apiServer{
-		Handler:     auth.NewHandler(authSvc, cfg.SecureCookies()),
-		userHandler: user.NewHandler(userSvc, auth.Identity{}),
-		pool:        pool,
+		authAPI: auth.NewHandler(authSvc, cfg.SecureCookies()),
+		userAPI: user.NewHandler(userSvc, auth.Identity{}),
+		pool:    pool,
 	}
 	strict := gen.NewStrictHandler(srv, []gen.StrictMiddlewareFunc{
 		auth.StrictMiddleware(tokens, publicOperations(swagger)),
 	})
 
 	e := echo.New()
-	e.HTTPErrorHandler = platform.NewErrorHandler(log, auth.HTTPErrors...)
+	e.HTTPErrorHandler = platform.NewErrorHandler(log, append(auth.HTTPErrors, user.HTTPErrors...)...)
 	e.Use(middleware.RequestID(), platform.RequestLogger(log), middleware.Recover())
 	if len(cfg.CORSOrigins) > 0 {
 		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{

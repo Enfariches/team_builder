@@ -2,20 +2,13 @@ package tests
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
-
 	"builder/backend/internal/auth"
+	"builder/backend/internal/platform/pgtest"
 	"builder/backend/internal/user"
 )
 
@@ -46,44 +39,8 @@ func (a userAdapter) GetByID(ctx context.Context, id int64) (auth.User, error) {
 	return auth.User{ID: acc.ID, Login: acc.Login}, err
 }
 
-func newPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	ctx := context.Background()
-	ctr, err := tcpostgres.Run(ctx, "postgres:16",
-		tcpostgres.WithDatabase("test"), tcpostgres.WithUsername("test"), tcpostgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(wait.ForLog("database system is ready to accept connections").
-			WithOccurrence(2).WithStartupTimeout(60*time.Second)))
-	if err != nil {
-		t.Skipf("docker недоступен: %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(ctr) })
-
-	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.Up(db, "../../../migrations"); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
 func TestSessionLifecycleOnPostgres(t *testing.T) {
-	pool := newPool(t)
+	pool := pgtest.New(t)
 	ctx := context.Background()
 	svc, err := auth.NewService(userAdapter{user.NewService(user.NewRepository(pool))},
 		auth.NewPgTxRunner(pool), auth.NewTokenIssuer([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute), 30*24*time.Hour)

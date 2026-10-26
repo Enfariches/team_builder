@@ -17,7 +17,7 @@ JWT (access 30 минут + refresh в httpOnly-cookie), Argon2id, Docker.
 ## Статус
 
 Готово: `auth` (регистрация, вход, обновление и отзыв сессии), `user`
-(`GET /users/me`), `GET /health`. Остальные методы из спеки пока не
+(`GET` и `PATCH /users/me`), `GET /health`. Остальные методы из спеки пока не
 реализованы.
 
 ## Quick start
@@ -59,6 +59,7 @@ curl -b cookies.txt -c cookies.txt -X POST localhost:8080/api/v1/auth/refresh
 | POST | `/auth/refresh` | refresh-cookie | обновление сессии с ротацией refresh | 200, 401 |
 | POST | `/auth/logout` | Bearer | выход, отзыв refresh и очистка cookie | 204, 401 |
 | GET | `/users/me` | Bearer | профиль текущего пользователя | 200, 401 |
+| PATCH | `/users/me` | Bearer | частичное обновление профиля (`firstName`, `lastName`, `middleName`, `link`) | 200, 400, 401, 422 |
 
 Как устроена авторизация:
 - **Access-токен** (JWT, 30 минут) приходит в теле ответа `register`, `login` и
@@ -69,6 +70,15 @@ curl -b cookies.txt -c cookies.txt -X POST localhost:8080/api/v1/auth/refresh
   цепочку, потребуется новый вход.
 - Роли Owner/Member определяются внутри пространства, глобальной роли у
   пользователя нет.
+
+`PATCH /users/me` меняет только переданные поля. Для `middleName` и `link`
+`null` или пустая строка очищает значение; `firstName` и `lastName` пустыми
+быть не могут (422).
+
+```bash
+curl -X PATCH -H "Authorization: Bearer <accessToken>" -H 'Content-Type: application/json' \
+  -d '{"firstName":"Пётр","link":null}' localhost:8080/api/v1/users/me
+```
 
 Ошибки приходят в едином формате `{code, message, details?, requestId}`.
 
