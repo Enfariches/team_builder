@@ -10,6 +10,7 @@ import (
 
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
+	"builder/backend/internal/form"
 	"builder/backend/internal/split"
 	"builder/backend/internal/user"
 )
@@ -24,6 +25,7 @@ type (
 	authAPI  = auth.Handler
 	userAPI  = user.Handler
 	splitAPI = split.Handler
+	formAPI  = form.Handler
 )
 
 type apiServer struct {
@@ -31,6 +33,7 @@ type apiServer struct {
 	*authAPI
 	*userAPI
 	*splitAPI
+	*formAPI
 	pool *pgxpool.Pool
 }
 

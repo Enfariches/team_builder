@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +17,7 @@ import (
 
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
+	"builder/backend/internal/form"
 	"builder/backend/internal/platform"
 	"builder/backend/internal/split"
 	"builder/backend/internal/user"
@@ -64,6 +66,8 @@ func run(log *slog.Logger, cfg platform.Config) error {
 	}()
 	splitSvc := split.NewService(split.NewRepository(pool), split.NewPgTxRunner(pool), memberStub{}, memberStub{}, hub)
 
+	formSvc := form.NewService(form.NewRepository(pool))
+
 	swagger, err := gen.GetSwagger()
 	if err != nil {
 		return fmt.Errorf("load spec: %w", err)
@@ -73,6 +77,7 @@ func run(log *slog.Logger, cfg platform.Config) error {
 		authAPI:  auth.NewHandler(authSvc, cfg.SecureCookies()),
 		userAPI:  user.NewHandler(userSvc, auth.Identity{}),
 		splitAPI: split.NewHandler(splitSvc, hub, auth.Identity{}, split.DefaultPingInterval),
+		formAPI:  form.NewHandler(formSvc, auth.Identity{}),
 		pool:     pool,
 	}
 	strict := gen.NewStrictHandler(srv, []gen.StrictMiddlewareFunc{
@@ -80,7 +85,7 @@ func run(log *slog.Logger, cfg platform.Config) error {
 	})
 
 	e := echo.New()
-	e.HTTPErrorHandler = platform.NewErrorHandler(log, append(append(auth.HTTPErrors, user.HTTPErrors...), split.HTTPErrors...)...)
+	e.HTTPErrorHandler = platform.NewErrorHandler(log, slices.Concat(auth.HTTPErrors, user.HTTPErrors, split.HTTPErrors, form.HTTPErrors)...)
 	e.Use(middleware.RequestID(), platform.RequestLogger(log), middleware.Recover())
 	if len(cfg.CORSOrigins) > 0 {
 		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{

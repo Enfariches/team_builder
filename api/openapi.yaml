@@ -292,6 +292,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Form'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
@@ -338,6 +340,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Form'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -348,6 +352,9 @@ paths:
     delete:
       tags: [Forms]
       summary: Удаление анкеты
+      description: |
+        Пространства, в которые уже вступили с этой анкетой, не затрагиваются:
+        у участника остаётся замороженный снимок, а `formId` становится `null`.
       operationId: deleteForm
       responses:
         '204':
@@ -1341,6 +1348,7 @@ components:
 
     Form:
       type: object
+      required: [id, name, experience, skills, rolePreferences, createdAt, updatedAt]
       properties:
         id:
           type: integer
@@ -1402,17 +1410,22 @@ components:
           type: integer
           minimum: 0
           maximum: 10
+          default: 0
         skills:
           type: array
+          maxItems: 50
           items:
             type: string
+            maxLength: 100
         rolePreferences:
           type: array
+          maxItems: 20
           items:
             $ref: '#/components/schemas/RolePreference'
         comment:
           type: string
           nullable: true
+          maxLength: 2000
 
     FormUpdate:
       type: object
@@ -1426,15 +1439,24 @@ components:
           maximum: 10
         skills:
           type: array
+          maxItems: 50
           items:
             type: string
+            maxLength: 100
         rolePreferences:
           type: array
+          maxItems: 20
           items:
             $ref: '#/components/schemas/RolePreference'
         comment:
           type: string
           nullable: true
+          maxLength: 2000
+          description: '`null` или пустая строка очищает поле; если не передано — не меняется'
+          x-go-type: nullable.Nullable[string]
+          x-go-type-skip-optional-pointer: true
+          x-go-type-import:
+            path: github.com/oapi-codegen/nullable
 
     # ── Пространства ───────────────────────────────────────────────────
 
