@@ -18,6 +18,7 @@ import (
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
 	"builder/backend/internal/form"
+	"builder/backend/internal/invite"
 	"builder/backend/internal/platform"
 	"builder/backend/internal/split"
 	"builder/backend/internal/user"
@@ -67,6 +68,7 @@ func run(log *slog.Logger, cfg platform.Config) error {
 	splitSvc := split.NewService(split.NewRepository(pool), split.NewPgTxRunner(pool), memberStub{}, memberStub{}, hub)
 
 	formSvc := form.NewService(form.NewRepository(pool))
+	inviteSvc := invite.NewService(invite.NewRepository(pool), splitAccessAdapter{splitSvc}, splitInfoAdapter{splitSvc})
 
 	swagger, err := gen.GetSwagger()
 	if err != nil {
@@ -74,18 +76,19 @@ func run(log *slog.Logger, cfg platform.Config) error {
 	}
 
 	srv := &apiServer{
-		authAPI:  auth.NewHandler(authSvc, cfg.SecureCookies()),
-		userAPI:  user.NewHandler(userSvc, auth.Identity{}),
-		splitAPI: split.NewHandler(splitSvc, hub, auth.Identity{}, split.DefaultPingInterval),
-		formAPI:  form.NewHandler(formSvc, auth.Identity{}),
-		pool:     pool,
+		authAPI:   auth.NewHandler(authSvc, cfg.SecureCookies()),
+		userAPI:   user.NewHandler(userSvc, auth.Identity{}),
+		splitAPI:  split.NewHandler(splitSvc, hub, auth.Identity{}, split.DefaultPingInterval),
+		formAPI:   form.NewHandler(formSvc, auth.Identity{}),
+		inviteAPI: invite.NewHandler(inviteSvc, auth.Identity{}, cfg.InviteBaseURL),
+		pool:      pool,
 	}
 	strict := gen.NewStrictHandler(srv, []gen.StrictMiddlewareFunc{
 		auth.StrictMiddleware(tokens, publicOperations(swagger)),
 	})
 
 	e := echo.New()
-	e.HTTPErrorHandler = platform.NewErrorHandler(log, slices.Concat(auth.HTTPErrors, user.HTTPErrors, split.HTTPErrors, form.HTTPErrors)...)
+	e.HTTPErrorHandler = platform.NewErrorHandler(log, slices.Concat(auth.HTTPErrors, user.HTTPErrors, split.HTTPErrors, form.HTTPErrors, invite.HTTPErrors)...)
 	e.Use(middleware.RequestID(), platform.RequestLogger(log), middleware.Recover())
 	if len(cfg.CORSOrigins) > 0 {
 		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{

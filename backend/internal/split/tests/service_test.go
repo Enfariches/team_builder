@@ -95,6 +95,21 @@ func TestGetFillsStatsAndMemberRole(t *testing.T) {
 	}
 }
 
+func TestInfoNeedsNoAccess(t *testing.T) {
+	svc, _, mem, _, id := newEnv(t)
+	mem.add(id, 10)
+	sp, err := svc.Info(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp.ID != id || sp.MembersCount != 2 || sp.MyRole != "" || len(sp.Roles) == 0 {
+		t.Fatalf("%+v", sp)
+	}
+	if _, err := svc.Info(context.Background(), 999); !errors.Is(err, split.ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	ctx := context.Background()
 

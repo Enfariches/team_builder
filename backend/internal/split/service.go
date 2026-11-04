@@ -83,6 +83,19 @@ func (s *Service) Authorize(ctx context.Context, userID, id int64) (Access, erro
 	return acc, nil
 }
 
+// Info возвращает пространство со статистикой без проверки доступа. Только для
+// публичного предпросмотра по инвайту: вызывающий уже доказал владение токеном.
+func (s *Service) Info(ctx context.Context, id int64) (Split, error) {
+	sp, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Split{}, fmt.Errorf("split.Service.Info: split %d: %w", id, err)
+	}
+	if err := s.fillStats(ctx, []Split{sp}, func(i int, st Stats) { applyStats(&sp, st) }); err != nil {
+		return Split{}, fmt.Errorf("split.Service.Info: %w", err)
+	}
+	return sp, nil
+}
+
 func (s *Service) List(ctx context.Context, userID int64, role *string, status *Status) ([]Split, error) {
 	memberIDs, err := s.members.SplitIDsOfUser(ctx, userID)
 	if err != nil {

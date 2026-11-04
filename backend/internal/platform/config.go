@@ -17,21 +17,24 @@ type Config struct {
 	AppEnv      string
 	LogLevel    string
 	CORSOrigins []string
-	AccessTTL   time.Duration
-	RefreshTTL  time.Duration
+	// InviteBaseURL — адрес фронтенда, из него собираются инвайт-ссылки
+	InviteBaseURL string
+	AccessTTL     time.Duration
+	RefreshTTL    time.Duration
 }
 
 // LoadConfig читает конфиг только из env; обязательные значения без дефолта,
 // чтобы неверно сконфигурированный сервис падал на старте, а не в рантайме.
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		JWTSecret:   []byte(os.Getenv("JWT_SECRET")),
-		Port:        getenv("PORT", "8080"),
-		AppEnv:      getenv("APP_ENV", "local"),
-		LogLevel:    getenv("LOG_LEVEL", "info"),
-		AccessTTL:   30 * time.Minute,
-		RefreshTTL:  30 * 24 * time.Hour,
+		DatabaseURL:   os.Getenv("DATABASE_URL"),
+		JWTSecret:     []byte(os.Getenv("JWT_SECRET")),
+		Port:          getenv("PORT", "8080"),
+		AppEnv:        getenv("APP_ENV", "local"),
+		LogLevel:      getenv("LOG_LEVEL", "info"),
+		InviteBaseURL: strings.TrimRight(getenv("INVITE_BASE_URL", "http://localhost:3000"), "/"),
+		AccessTTL:     30 * time.Minute,
+		RefreshTTL:    30 * 24 * time.Hour,
 	}
 	for _, o := range strings.Split(os.Getenv("CORS_ORIGINS"), ",") {
 		if o = strings.TrimSpace(o); o != "" {

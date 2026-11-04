@@ -33,6 +33,8 @@ services:
       # local и test отключают Secure у refresh-cookie (стенд работает по http)
       APP_ENV: ${APP_ENV:-local}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # Адрес фронтенда: из него собираются инвайт-ссылки (<адрес>/join/<токен>)
+      INVITE_BASE_URL: ${INVITE_BASE_URL:-http://localhost:3000}
       # debug включает запись о каждом запросе (метод, путь, статус, время)
       LOG_LEVEL: ${LOG_LEVEL:-debug}
     ports: ["8080:8080"]

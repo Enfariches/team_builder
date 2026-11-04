@@ -620,11 +620,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
     post:
       tags: [Invites]
       summary: Создание инвайт-ссылки
-      description: Только владелец. Возвращает токен и готовую ссылку для рассылки.
+      description: |
+        Только владелец. Возвращает токен и готовую ссылку для рассылки.
+        Без тела инвайт бессрочный и без лимита использований;
+        `expiresAt`, если указан, должен быть в будущем.
       operationId: createInvite
       requestBody:
         required: false
@@ -639,12 +644,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Invite'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
 
   /splits/{splitId}/invites/{inviteId}:
     parameters:
@@ -658,6 +667,7 @@ paths:
     delete:
       tags: [Invites]
       summary: Отзыв инвайт-ссылки
+      description: Только владелец. Повторный отзыв ничего не меняет и тоже отвечает 204.
       operationId: revokeInvite
       responses:
         '204':
@@ -698,6 +708,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              example:
+                code: invite_not_found
+                message: Приглашение не найдено, отозвано или истекло
 
   # ─────────────────────────────── Members ──────────────────────────────
 
@@ -1671,6 +1684,7 @@ components:
 
     Invite:
       type: object
+      required: [id, token, url, usesCount, createdAt]
       properties:
         id:
           type: integer
@@ -1715,6 +1729,7 @@ components:
     InvitePreview:
       type: object
       description: Публичные сведения о пространстве по инвайт-ссылке
+      required: [splitTitle, teamSize, roleNames, membersCount, status]
       properties:
         splitTitle:
           type: string

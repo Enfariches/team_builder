@@ -1,18 +1,18 @@
 # Чеклист готовности backend
 
-Составлен по `api/openapi.yaml` (36 операций). Отмечено сделанное на 2026-10-26, после `form` обновлено.
+Составлен по `api/openapi.yaml` (36 операций). Отмечено сделанное на 2026-10-26, после `invite` обновлено.
 
 ## Итог
 
 | Метрика | Значение |
 |---|---|
-| Операций API реализовано | 19 из 36 (53%) |
-| Готовность с учётом сложности | ≈ 40% |
+| Операций API реализовано | 23 из 36 (64%) |
+| Готовность с учётом сложности | ≈ 48% |
 
 Оценка по сложности: веса модулей — auth 4, users 2, forms 5, splits 9 (правила
 состава, переходы статусов, SSE), invites 4, members 8, distribution 12
 (алгоритм и property-based тесты), teams 3, health 0.5, тестовая обвязка 2.
-Готово 19.6 из ≈ 49.5: `split` засчитан на 90% (веса: 9 × 0.9), пока нет событий
+Готово 23.6 из ≈ 49.5: `split` засчитан на 90% (веса: 9 × 0.9), пока нет событий
 `member_joined` и `distribution_published` и реальных участников.
 
 ## Инфраструктура
@@ -68,13 +68,14 @@
 - [ ] События `member_joined` и `distribution_published` (публикуют `member` и `distribution` через `Hub`)
 - [ ] Реальные участники вместо заглушки `memberStub` (`membersCount`, `myRole=Member`, доступ участника)
 
-## Invites — 0/4
+## Invites — 4/4
 
-- [ ] Миграция `invites`
-- [ ] `GET /splits/{splitId}/invites`
-- [ ] `POST /splits/{splitId}/invites`
-- [ ] `DELETE /splits/{splitId}/invites/{inviteId}`
-- [ ] `GET /invites/{token}` (предпросмотр)
+- [x] Миграция `invites` (`ON DELETE CASCADE` от `splits`)
+- [x] `GET /splits/{splitId}/invites`
+- [x] `POST /splits/{splitId}/invites`
+- [x] `DELETE /splits/{splitId}/invites/{inviteId}` (идемпотентный)
+- [x] `GET /invites/{token}` (предпросмотр)
+- [x] `Service.Redeem` / `Release` (атомарный счётчик) для `member`, подключит он через свой порт
 
 ## Members — 0/6
 

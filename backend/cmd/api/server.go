@@ -11,6 +11,7 @@ import (
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
 	"builder/backend/internal/form"
+	"builder/backend/internal/invite"
 	"builder/backend/internal/split"
 	"builder/backend/internal/user"
 )
@@ -22,10 +23,11 @@ type notImplemented struct{ gen.StrictServerInterface }
 // Алиасы нужны, чтобы у встроенных обработчиков были разные имена полей:
 // оба типа называются Handler.
 type (
-	authAPI  = auth.Handler
-	userAPI  = user.Handler
-	splitAPI = split.Handler
-	formAPI  = form.Handler
+	authAPI   = auth.Handler
+	userAPI   = user.Handler
+	splitAPI  = split.Handler
+	formAPI   = form.Handler
+	inviteAPI = invite.Handler
 )
 
 type apiServer struct {
@@ -34,6 +36,7 @@ type apiServer struct {
 	*userAPI
 	*splitAPI
 	*formAPI
+	*inviteAPI
 	pool *pgxpool.Pool
 }
 
@@ -125,4 +128,42 @@ func (memberStub) SplitIDsOfUser(context.Context, int64) ([]int64, error) { retu
 
 func (memberStub) Stats(context.Context, []int64) (map[int64]split.Stats, error) {
 	return map[int64]split.Stats{}, nil
+}
+
+// splitAccessAdapter переводит split.Service в порт SplitAccess модуля invite.
+type splitAccessAdapter struct{ svc *split.Service }
+
+func (a splitAccessAdapter) Authorize(ctx context.Context, userID, splitID int64) (invite.Access, error) {
+	acc, err := a.svc.Authorize(ctx, userID, splitID)
+	if errors.Is(err, split.ErrNotFound) {
+		return "", fmt.Errorf("splitAccessAdapter.Authorize: %w (%w)", invite.ErrSplitNotFound, err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("splitAccessAdapter.Authorize: %w", err)
+	}
+	if acc == split.AccessOwner {
+		return invite.AccessOwner, nil
+	}
+	return invite.AccessMember, nil
+}
+
+// splitInfoAdapter отдаёт модулю invite публичные сведения о пространстве.
+type splitInfoAdapter struct{ svc *split.Service }
+
+func (a splitInfoAdapter) SplitInfo(ctx context.Context, splitID int64) (invite.SplitInfo, error) {
+	sp, err := a.svc.Info(ctx, splitID)
+	if errors.Is(err, split.ErrNotFound) {
+		return invite.SplitInfo{}, fmt.Errorf("splitInfoAdapter.SplitInfo: %w (%w)", invite.ErrSplitNotFound, err)
+	}
+	if err != nil {
+		return invite.SplitInfo{}, fmt.Errorf("splitInfoAdapter.SplitInfo: %w", err)
+	}
+	names := make([]string, len(sp.Roles))
+	for i, r := range sp.Roles {
+		names[i] = r.Name
+	}
+	return invite.SplitInfo{
+		Title: sp.Title, Description: sp.Description, TeamSize: sp.TeamSize,
+		RoleNames: names, MembersCount: sp.MembersCount, Status: string(sp.Status),
+	}, nil
 }

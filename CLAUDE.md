@@ -42,7 +42,8 @@ Redis, Kafka, gRPC, инструменты управления монорепо
     /auth                  # токены, хеши, middleware RequireAuth
     /user                  # профиль
     /form                  # анкеты компетенций
-    /split                 # пространства, роли с квотами, статусы, инвайты
+    /split                 # пространства, роли с квотами, статусы
+    /invite                # инвайт-ссылки: выпуск, отзыв, предпросмотр
     /member                # участие, вступление по инвайту
     /distribution          # алгоритм, прогоны, публикация результата
     /team                  # команды, выгрузка
@@ -244,7 +245,8 @@ make test      # тесты
 ```
 
 Конфиг только через env, значения по умолчанию в `.env.example`:
-`DATABASE_URL`, `JWT_SECRET`, `PORT`, `APP_ENV`, `CORS_ORIGINS`.
+`DATABASE_URL`, `JWT_SECRET`, `PORT`, `APP_ENV`, `CORS_ORIGINS`,
+`INVITE_BASE_URL` (адрес фронтенда для инвайт-ссылок).
 
 ---
 
