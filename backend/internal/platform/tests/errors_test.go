@@ -31,12 +31,21 @@ func (msgErr) Error() string       { return "msg" }
 func (msgErr) Unwrap() error       { return errDomain }
 func (msgErr) UserMessage() string { return "Динамическое сообщение" }
 
+type detailsErr struct{}
+
+func (detailsErr) Error() string { return "details" }
+func (detailsErr) Unwrap() error { return errDomain }
+func (detailsErr) Details() [][2]string {
+	return [][2]string{{"remainderPolicy", "не помещается"}}
+}
+
 func TestErrorHandler(t *testing.T) {
 	e := echo.New()
 	e.HTTPErrorHandler = platform.NewErrorHandler(slog.Default(),
 		platform.ErrorRule{Target: errDomain, Status: http.StatusConflict, Code: "domain_conflict", Message: "Конфликт"})
 	e.GET("/domain", func(*echo.Context) error { return fmt.Errorf("wrapped: %w", errDomain) })
 	e.GET("/dynamic", func(*echo.Context) error { return msgErr{} })
+	e.GET("/details", func(*echo.Context) error { return detailsErr{} })
 	e.GET("/fields", func(*echo.Context) error { return fieldsErr{} })
 	e.GET("/unknown", func(*echo.Context) error { return errOther })
 
@@ -47,6 +56,8 @@ func TestErrorHandler(t *testing.T) {
 	}{
 		{"доменная ошибка по правилу", "GET", "/domain", 409, `"code":"domain_conflict"`},
 		{"динамическое сообщение", "GET", "/dynamic", 409, `"message":"Динамическое сообщение"`},
+		{"details не меняют статус правила", "GET", "/details", 409, `"code":"domain_conflict"`},
+		{"details доменной ошибки в теле", "GET", "/details", 409, `"field":"remainderPolicy"`},
 		{"ошибка валидации с кодом", "GET", "/fields", 422, `"code":"my_code"`},
 		{"details валидации", "GET", "/fields", 422, `"field":"login"`},
 		{"неизвестная ошибка — 500", "GET", "/unknown", 500, `"code":"internal_error"`},

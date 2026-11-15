@@ -71,6 +71,21 @@ type NewMember struct {
 	Snapshot FormSnapshot
 }
 
+// Placement — размещение участника при публикации распределения.
+type Placement struct {
+	MemberID int64
+	TeamID   int64
+	Role     string
+}
+
+// Assignment — размещение участника без анкеты; команды нет у листа ожидания.
+type Assignment struct {
+	MemberID int64
+	UserID   int64
+	TeamID   *int64
+	Role     *string
+}
+
 // SplitInfo — то, что member знает о пространстве.
 type SplitInfo struct {
 	OwnerID    int64

@@ -96,6 +96,17 @@ func (s *Service) Info(ctx context.Context, id int64) (Split, error) {
 	return sp, nil
 }
 
+// Lookup возвращает пространство без статистики и без проверки доступа. Для
+// модулей, которые сами определяют права (distribution, team) и которым
+// счётчики не нужны.
+func (s *Service) Lookup(ctx context.Context, id int64) (Split, error) {
+	sp, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Split{}, fmt.Errorf("split.Service.Lookup: split %d: %w", id, err)
+	}
+	return sp, nil
+}
+
 func (s *Service) List(ctx context.Context, userID int64, role *string, status *Status) ([]Split, error) {
 	memberIDs, err := s.members.SplitIDsOfUser(ctx, userID)
 	if err != nil {
@@ -216,6 +227,36 @@ func (s *Service) ChangeStatus(ctx context.Context, userID, id int64, to Status)
 	applyStats(&sp, stats)
 	sp.MyRole = AccessOwner
 	return sp, nil
+}
+
+// LockForPublish блокирует строку пространства (SELECT ... FOR UPDATE) и
+// отдаёт её актуальное состояние. Нужна публикации распределения: вызывать
+// только внутри общей транзакции (platform.TxManager), иначе блокировка
+// снимется сразу же.
+func (s *Service) LockForPublish(ctx context.Context, id int64) (Split, error) {
+	sp, err := s.store.GetForUpdate(ctx, id)
+	if err != nil {
+		return Split{}, fmt.Errorf("split.Service.LockForPublish: split %d: %w", id, err)
+	}
+	return sp, nil
+}
+
+// MarkFinished переводит Open/Closed в Finished. Ручной переход туда
+// запрещён (Status.CanTransition), поэтому публикация идёт отдельным путём.
+// Вызывать только в транзакции, где пространство уже заблокировано
+// LockForPublish: статус проверяется здесь же, под этой блокировкой.
+func (s *Service) MarkFinished(ctx context.Context, id int64) error {
+	cur, err := s.store.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("split.Service.MarkFinished: split %d: %w", id, err)
+	}
+	if cur.Status != StatusOpen && cur.Status != StatusClosed {
+		return fmt.Errorf("split.Service.MarkFinished: split %d: %w", id, &TransitionError{From: cur.Status, To: StatusFinished})
+	}
+	if _, err := s.store.SetStatus(ctx, id, StatusFinished); err != nil {
+		return fmt.Errorf("split.Service.MarkFinished: split %d: set status: %w", id, err)
+	}
+	return nil
 }
 
 // checkOwner читает пространство вне транзакции и требует права владельца.

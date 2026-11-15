@@ -897,7 +897,10 @@ paths:
 
         Прогон детерминирован: одинаковый `seed` на одном и том же составе
         даёт идентичный результат. Если `seed` не передан, генерируется
-        случайный и возвращается в ответе — его можно переиспользовать.
+        случайный (в диапазоне [0, 2^53), чтобы JavaScript читал его без потери
+        точности) и возвращается в ответе — его можно переиспользовать.
+
+        Доступно в статусах `Open` и `Closed`.
       operationId: previewDistribution
       requestBody:
         required: false
@@ -933,6 +936,17 @@ paths:
                   value:
                     code: already_finished
                     message: Распределение уже завершено
+                split_not_open:
+                  value:
+                    code: split_not_open
+                    message: Набор участников ещё не открыт
+                distribution_infeasible:
+                  value:
+                    code: distribution_infeasible
+                    message: Состав нельзя разбить на команды с соблюдением квот ролей
+                    details:
+                      - field: remainderPolicy
+                        message: При политике spread в команде получается 6 человек, а роли вмещают не более 5
 
   /splits/{splitId}/distribution/publish:
     parameters:
@@ -947,7 +961,11 @@ paths:
 
         Если `runId` передан, публикуется ранее сделанный прогон.
         Если нет — выполняется новый прогон и сразу публикуется.
-        Пространство переходит в статус `Finished`.
+        Пространство переходит в статус `Finished`; публикация доступна из
+        `Open` и `Closed`.
+
+        Если с момента preview состав участников изменился, публикация
+        прогона с `runId` отклоняется (`roster_changed`): нужен новый preview.
       operationId: publishDistribution
       requestBody:
         required: false
@@ -972,13 +990,34 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: Пространство не найдено или прогон не принадлежит ему
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '409':
           description: Распределение невозможно
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+              examples:
+                roster_changed:
+                  value:
+                    code: roster_changed
+                    message: Состав участников изменился после пробного прогона, сделайте новый
+                split_not_open:
+                  value:
+                    code: split_not_open
+                    message: Набор участников ещё не открыт
+                not_enough_members:
+                  value:
+                    code: not_enough_members
+                    message: Участников меньше, чем требуется для одной команды
+                distribution_infeasible:
+                  value:
+                    code: distribution_infeasible
+                    message: Состав нельзя разбить на команды с соблюдением квот ролей
 
   /splits/{splitId}/distribution/runs:
     parameters:
@@ -1001,6 +1040,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # ──────────────────────────────── Teams ───────────────────────────────
 

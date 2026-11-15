@@ -8,19 +8,26 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"builder/backend/internal/platform"
 	splitdb "builder/backend/internal/split/sqlc/db"
 )
 
 type Repository struct {
-	q *splitdb.Queries
+	db splitdb.DBTX
 }
 
 func NewRepository(db splitdb.DBTX) *Repository {
-	return &Repository{q: splitdb.New(db)}
+	return &Repository{db: db}
+}
+
+// q берёт транзакцию из ctx (общая транзакция публикации распределения),
+// а если её нет — работает на соединении, с которым создан репозиторий.
+func (r *Repository) q(ctx context.Context) *splitdb.Queries {
+	return splitdb.New(platform.DB(ctx, r.db))
 }
 
 func (r *Repository) Insert(ctx context.Context, n NewSplit) (Split, error) {
-	row, err := r.q.InsertSplit(ctx, splitdb.InsertSplitParams{
+	row, err := r.q(ctx).InsertSplit(ctx, splitdb.InsertSplitParams{
 		OwnerID:         n.OwnerID,
 		Title:           n.Title,
 		Description:     n.Description,
@@ -40,12 +47,12 @@ func (r *Repository) Insert(ctx context.Context, n NewSplit) (Split, error) {
 }
 
 func (r *Repository) Get(ctx context.Context, id int64) (Split, error) {
-	row, err := r.q.GetSplit(ctx, id)
+	row, err := r.q(ctx).GetSplit(ctx, id)
 	return r.withRoles(ctx, "Get", row, err)
 }
 
 func (r *Repository) GetForUpdate(ctx context.Context, id int64) (Split, error) {
-	row, err := r.q.GetSplitForUpdate(ctx, id)
+	row, err := r.q(ctx).GetSplitForUpdate(ctx, id)
 	return r.withRoles(ctx, "GetForUpdate", row, err)
 }
 
@@ -56,7 +63,7 @@ func (r *Repository) Update(ctx context.Context, id int64, p Patch) (Split, erro
 		v := string(*p.RemainderPolicy)
 		policy = &v
 	}
-	row, err := r.q.UpdateSplit(ctx, splitdb.UpdateSplitParams{
+	row, err := r.q(ctx).UpdateSplit(ctx, splitdb.UpdateSplitParams{
 		ID:              id,
 		Title:           p.Title,
 		TeamSize:        toInt32Ptr(p.TeamSize),
@@ -75,7 +82,7 @@ func (r *Repository) Update(ctx context.Context, id int64, p Patch) (Split, erro
 		return Split{}, fmt.Errorf("split.repository.Update: %w", err)
 	}
 	if p.Roles != nil {
-		if err := r.q.DeleteRolesBySplit(ctx, id); err != nil {
+		if err := r.q(ctx).DeleteRolesBySplit(ctx, id); err != nil {
 			return Split{}, fmt.Errorf("split.repository.Update: delete roles: %w", err)
 		}
 		if _, err := r.insertRoles(ctx, id, *p.Roles); err != nil {
@@ -86,12 +93,12 @@ func (r *Repository) Update(ctx context.Context, id int64, p Patch) (Split, erro
 }
 
 func (r *Repository) SetStatus(ctx context.Context, id int64, status Status) (Split, error) {
-	row, err := r.q.UpdateSplitStatus(ctx, splitdb.UpdateSplitStatusParams{ID: id, Status: string(status)})
+	row, err := r.q(ctx).UpdateSplitStatus(ctx, splitdb.UpdateSplitStatusParams{ID: id, Status: string(status)})
 	return r.withRoles(ctx, "SetStatus", row, err)
 }
 
 func (r *Repository) Delete(ctx context.Context, id int64) error {
-	if err := r.q.DeleteSplit(ctx, id); err != nil {
+	if err := r.q(ctx).DeleteSplit(ctx, id); err != nil {
 		return fmt.Errorf("split.repository.Delete: %w", err)
 	}
 	return nil
@@ -106,7 +113,7 @@ func (r *Repository) ListForUser(ctx context.Context, userID int64, memberIDs []
 	if memberIDs == nil {
 		memberIDs = []int64{}
 	}
-	rows, err := r.q.ListSplitsForUser(ctx, splitdb.ListSplitsForUserParams{
+	rows, err := r.q(ctx).ListSplitsForUser(ctx, splitdb.ListSplitsForUserParams{
 		UserID: userID, MemberIds: memberIDs, Role: role, Status: st,
 	})
 	if err != nil {
@@ -116,7 +123,7 @@ func (r *Repository) ListForUser(ctx context.Context, userID int64, memberIDs []
 	for i, row := range rows {
 		ids[i] = row.ID
 	}
-	roleRows, err := r.q.ListRolesBySplitIDs(ctx, ids)
+	roleRows, err := r.q(ctx).ListRolesBySplitIDs(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("split.repository.ListForUser: roles: %w", err)
 	}
@@ -138,7 +145,7 @@ func (r *Repository) insertRoles(ctx context.Context, splitID int64, in []RoleIn
 		if ri.SortOrder != nil {
 			order = *ri.SortOrder
 		}
-		row, err := r.q.InsertRole(ctx, splitdb.InsertRoleParams{
+		row, err := r.q(ctx).InsertRole(ctx, splitdb.InsertRoleParams{
 			SplitID: splitID, Name: ri.Name,
 			PerTeamMin: int32(ri.PerTeamMin), PerTeamMax: int32(ri.PerTeamMax),
 			SortOrder: int32(order),
@@ -158,7 +165,7 @@ func (r *Repository) withRoles(ctx context.Context, op string, row splitdb.Split
 	if err != nil {
 		return Split{}, fmt.Errorf("split.repository.%s: %w", op, err)
 	}
-	rows, err := r.q.ListRolesBySplitIDs(ctx, []int64{row.ID})
+	rows, err := r.q(ctx).ListRolesBySplitIDs(ctx, []int64{row.ID})
 	if err != nil {
 		return Split{}, fmt.Errorf("split.repository.%s: roles: %w", op, err)
 	}
@@ -206,6 +213,10 @@ type PgTxRunner struct {
 func NewPgTxRunner(pool *pgxpool.Pool) *PgTxRunner { return &PgTxRunner{pool: pool} }
 
 func (p *PgTxRunner) Run(ctx context.Context, fn func(Store) error) (err error) {
+	// уже внутри общей транзакции: репозиторий сам возьмёт её из ctx
+	if platform.InTx(ctx) {
+		return fn(NewRepository(p.pool))
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("split.PgTxRunner.Run: begin tx: %w", err)

@@ -35,6 +35,13 @@ type Messager interface {
 	UserMessage() string
 }
 
+// DetailsError позволяет доменной ошибке с собственным статусом из ErrorRule
+// (например, 409) приложить перечень конкретных проблем в details. В отличие
+// от FieldsError статус не меняется на 422.
+type DetailsError interface {
+	Details() [][2]string
+}
+
 type errorBody struct {
 	Code      string        `json:"code"`
 	Message   string        `json:"message"`
@@ -84,6 +91,12 @@ func NewErrorHandler(log *slog.Logger, rules ...ErrorRule) echo.HTTPErrorHandler
 					var m Messager
 					if errors.As(err, &m) {
 						body.Message = m.UserMessage()
+					}
+					var d DetailsError
+					if errors.As(err, &d) {
+						for _, f := range d.Details() {
+							body.Details = append(body.Details, errorDetail{Field: f[0], Message: f[1]})
+						}
 					}
 					break
 				}

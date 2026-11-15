@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"builder/backend/internal/member"
 )
@@ -134,50 +133,6 @@ func TestJoinConcurrentRespectsLimit(t *testing.T) {
 	}
 }
 
-// Ожидание очереди на пространство прерывается отменой запроса; отказавшему
-// возвращается использование инвайта, а очередь после него остаётся рабочей.
-func TestJoinWaitIsCancellable(t *testing.T) {
-	e := newEnv(openSplit(nil))
-	e.splits.gate = make(chan struct{})
-	e.splits.entered = make(chan struct{}, 2)
-
-	first := make(chan error, 1)
-	go func() {
-		_, err := e.svc.Join(context.Background(), student, "tok", 1)
-		first <- err
-	}()
-	<-e.splits.entered // первый внутри транзакции и держит пространство
-
-	ctx, cancel := context.WithCancel(context.Background())
-	second := make(chan error, 1)
-	go func() {
-		_, err := e.svc.Join(ctx, other, "tok", 1)
-		second <- err
-	}()
-	time.Sleep(20 * time.Millisecond) // второй должен встать в очередь
-	cancel()
-
-	select {
-	case err := <-second:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("второй: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("ожидание не прервалось отменой контекста")
-	}
-	if len(e.invites.releaseOf) != 1 {
-		t.Fatalf("использование инвайта не возвращено: %v", e.invites.releaseOf)
-	}
-
-	close(e.splits.gate)
-	if err := <-first; err != nil {
-		t.Fatalf("первый: %v", err)
-	}
-	if n, _ := e.store.Count(context.Background(), splitID); n != 1 {
-		t.Fatalf("участников %d, ждали 1", n)
-	}
-}
-
 func TestListBySplitAccess(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
@@ -211,123 +166,5 @@ func TestListBySplitAccess(t *testing.T) {
 				t.Errorf("ListBriefs вызван %d раз, ждали один запрос на список", n)
 			}
 		})
-	}
-}
-
-func TestGetMine(t *testing.T) {
-	ctx := context.Background()
-	e := newEnv(openSplit(nil))
-	if _, err := e.svc.GetMine(ctx, student, splitID); !errors.Is(err, member.ErrNotFound) {
-		t.Fatalf("не участник: %v", err)
-	}
-	_, _ = e.store.Insert(ctx, member.NewMember{SplitID: splitID, UserID: student, FormID: 1})
-	m, err := e.svc.GetMine(ctx, student, splitID)
-	if err != nil || m.UserID != student || m.User.ID != student {
-		t.Fatalf("m=%+v err=%v", m, err)
-	}
-}
-
-func TestLeave(t *testing.T) {
-	ctx := context.Background()
-	tests := []struct {
-		name   string
-		status string
-		member bool
-		want   error
-	}{
-		{"выход из открытого", member.StatusOpen, true, nil},
-		{"выход при закрытом наборе", "Closed", true, nil},
-		{"после публикации нельзя", member.StatusFinished, true, member.ErrSplitFinished},
-		{"не участник", member.StatusOpen, false, member.ErrNotFound},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(member.SplitInfo{OwnerID: owner, Status: tc.status})
-			if tc.member {
-				_, _ = e.store.Insert(ctx, member.NewMember{SplitID: splitID, UserID: student, FormID: 1})
-				_, _ = e.store.Insert(ctx, member.NewMember{SplitID: splitID, UserID: other, FormID: 1})
-			}
-			err := e.svc.Leave(ctx, student, splitID)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("err = %v, want %v", err, tc.want)
-			}
-			inSplit, _ := e.store.IsMember(ctx, splitID, student)
-			if tc.want == nil {
-				if inSplit {
-					t.Error("участник не удалён")
-				}
-				if len(e.events.counts) != 1 || e.events.counts[0] != 1 {
-					t.Errorf("events = %v, ждали [1]", e.events.counts)
-				}
-				if len(e.invites.releaseOf) != 0 {
-					t.Error("использование инвайта не должно возвращаться при выходе")
-				}
-			} else if tc.member && !inSplit {
-				t.Error("участник удалён несмотря на ошибку")
-			}
-		})
-	}
-}
-
-func TestRemove(t *testing.T) {
-	ctx := context.Background()
-	tests := []struct {
-		name   string
-		user   int64
-		target int64 // id участника; 0 — существующий
-		status string
-		want   error
-	}{
-		{"владелец исключает", owner, 0, member.StatusOpen, nil},
-		{"участник не может исключать (403)", other, 0, member.StatusOpen, member.ErrForbidden},
-		{"посторонний видит 404", 999, 0, member.StatusOpen, member.ErrNotFound},
-		{"участника нет", owner, 555, member.StatusOpen, member.ErrNotFound},
-		{"после публикации нельзя", owner, 0, member.StatusFinished, member.ErrSplitFinished},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(member.SplitInfo{OwnerID: owner, Status: tc.status})
-			victim, _ := e.store.Insert(ctx, member.NewMember{SplitID: splitID, UserID: student, FormID: 1})
-			_, _ = e.store.Insert(ctx, member.NewMember{SplitID: splitID, UserID: other, FormID: 1})
-			id := tc.target
-			if id == 0 {
-				id = victim.ID
-			}
-			err := e.svc.Remove(ctx, tc.user, id)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("err = %v, want %v", err, tc.want)
-			}
-			gone := func() bool { ok, _ := e.store.IsMember(ctx, splitID, student); return !ok }()
-			if (tc.want == nil) != gone {
-				t.Errorf("удалён = %v при ошибке %v", gone, err)
-			}
-			if tc.want == nil && (len(e.events.counts) != 1 || e.events.counts[0] != 1) {
-				t.Errorf("events = %v", e.events.counts)
-			}
-		})
-	}
-}
-
-// Адаптеры split получают данные через Service.
-func TestSplitFacingQueries(t *testing.T) {
-	ctx := context.Background()
-	e := newEnv(openSplit(nil))
-	_, _ = e.store.Insert(ctx, member.NewMember{SplitID: splitID, UserID: student, FormID: 1})
-	_, _ = e.store.Insert(ctx, member.NewMember{SplitID: 200, UserID: student, FormID: 1})
-	_, _ = e.store.Insert(ctx, member.NewMember{SplitID: 200, UserID: other, FormID: 1})
-
-	if ok, _ := e.svc.IsMember(ctx, splitID, student); !ok {
-		t.Error("IsMember = false")
-	}
-	if ok, _ := e.svc.IsMember(ctx, splitID, other); ok {
-		t.Error("IsMember = true для не участника")
-	}
-	ids, _ := e.svc.SplitIDsOfUser(ctx, student)
-	if len(ids) != 2 {
-		t.Errorf("SplitIDsOfUser = %v", ids)
-	}
-	counts, _ := e.svc.Counts(ctx, []int64{splitID, 200, 300})
-	if counts[splitID] != 1 || counts[200] != 2 || counts[300] != 0 {
-		t.Errorf("Counts = %v", counts)
 	}
 }

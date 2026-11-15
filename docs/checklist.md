@@ -6,15 +6,15 @@
 
 | Метрика | Значение |
 |---|---|
-| Операций API реализовано | 28 из 36 (78%) |
-| Готовность с учётом сложности | ≈ 62% |
+| Операций API реализовано | 34 из 36 (94%) |
+| Готовность с учётом сложности | ≈ 94% |
 
 Оценка по сложности: веса модулей — auth 4, users 2, forms 5, splits 9 (правила
 состава, переходы статусов, SSE), invites 4, members 8, distribution 12
 (алгоритм и property-based тесты), teams 3, health 0.5, тестовая обвязка 2.
-Готово ≈ 30.9 из ≈ 49.5: `split` засчитан на 95% (нет только события
-`distribution_published`), `member` — на 85% (8 × 0.85: `PATCH /members/{memberId}`
-сознательно отложен).
+Готово ≈ 46.3 из ≈ 49.5: `split`, `distribution` и `teams` закрыты, `member` засчитан
+на 85% (`PATCH /members/{memberId}` сознательно отложен), остались `make seed`,
+`POST /test/reset` и CI.
 
 ## Инфраструктура
 
@@ -67,7 +67,7 @@
 - [x] `POST /splits/{splitId}/status` (Draft → Open → Closed → Open)
 - [x] `GET /splits/{splitId}/stream` (SSE: `status_changed`, `ping`)
 - [x] Событие `member_joined` (публикует `member` через `Hub`)
-- [ ] Событие `distribution_published` (опубликует `distribution` через `Hub`)
+- [x] Событие `distribution_published` (вместе со `status_changed: Finished`)
 - [x] Реальные участники вместо заглушки `memberStub` (`membersCount`, `myRole=Member`, доступ участника)
 
 ## Invites — 4/4
@@ -89,23 +89,24 @@
 - [ ] `PATCH /members/{memberId}` — отложено: ручной перенос между командами сознательно не делается до MVP (CLAUDE.md)
 - [x] `DELETE /members/{memberId}`
 - [x] Сериализация вступлений: `pg_advisory_xact_lock(split_id)` + мьютекс в памяти; `distribution.publish` должен брать тот же lock (`SELECT pg_advisory_xact_lock(split_id)` до проверки статуса)
-- [ ] Для `distribution`: метод `ListCandidates` (снимки анкет) и FK `members.team_id → teams.id` (в миграции модуля `team`)
+- [x] Для `distribution`: `member.Candidates` (снимки анкет), FK `members.team_id → teams.id` (миграция `0007_teams.sql`)
 
-## Distribution — 0/3
+## Distribution — 3/3
 
-- [ ] Миграция `distribution_runs` (`seed`)
-- [ ] Алгоритм распределения (квоты ролей, `remainderPolicy`, лист ожидания)
-- [ ] `POST /splits/{splitId}/distribution/preview`
-- [ ] `POST /splits/{splitId}/distribution/publish` (идемпотентность: `FOR UPDATE` и проверка статуса в транзакции)
-- [ ] `GET /splits/{splitId}/distribution/runs`
-- [ ] Property-based тесты инвариантов (одна команда на участника, квоты, размеры, детерминизм по `seed`)
+- [x] Миграция `distribution_runs` (`seed`, `roster`, `result`; уникальный индекс на один опубликованный прогон)
+- [x] Алгоритм `greedy_v1` (квоты ролей, три `remainderPolicy`, лист ожидания), независимая проверка `Validate`
+- [x] `POST /splits/{splitId}/distribution/preview`
+- [x] `POST /splits/{splitId}/distribution/publish` (одна транзакция: advisory-lock, `FOR UPDATE`, статус под блокировкой; повтор возвращает тот же результат)
+- [x] `GET /splits/{splitId}/distribution/runs`
+- [x] Property-тесты инвариантов (одна команда на участника, квоты, размеры, детерминизм по `seed`, независимость от порядка входа)
+- [x] Общая транзакция через context (`platform.TxManager`): модули пишут только в свои таблицы
 
-## Teams — 0/3
+## Teams — 3/3
 
-- [ ] Миграция `teams`
-- [ ] `GET /splits/{splitId}/teams`
-- [ ] `GET /splits/{splitId}/teams/me`
-- [ ] `GET /splits/{splitId}/teams/export`
+- [x] Миграция `teams`
+- [x] `GET /splits/{splitId}/teams`
+- [x] `GET /splits/{splitId}/teams/me` (без анкет сокомандников)
+- [x] `GET /splits/{splitId}/teams/export` (CSV, UTF-8 BOM, защита от формул)
 
 ## Тесты
 
@@ -114,6 +115,9 @@
 - [ ] HTTP-слой auth (cookie, middleware) автотестами
 - [x] split: правила состава (в том числе сверка с перебором), статусы, доступ, HTTP, SSE, Postgres, гонка смены статуса
 - [x] member: домен, сервис (в том числе гонка вступлений и отмена ожидания), HTTP и приватность анкет, Postgres (каскады, снимок, гонка при пуле в 4 соединения)
+- [x] distribution: property-тесты алгоритма, публикация и идемпотентность (юнит)
+- [x] team: права, `/teams/me`, CSV
+- [x] сквозные на Postgres (`cmd/api/e2e_test.go`): жизненный цикл до публикации и гонка вступления с публикацией
 - [ ] Остальные модули
 
 ## Известные долги

@@ -19,6 +19,8 @@ type Store interface {
 	SplitIDsOfUser(ctx context.Context, userID int64) ([]int64, error)
 	IsMember(ctx context.Context, splitID, userID int64) (bool, error)
 	Delete(ctx context.Context, id int64) error
+	Assign(ctx context.Context, splitID int64, placements []Placement) error
+	ListAssignments(ctx context.Context, splitID int64) ([]Assignment, error)
 }
 
 // TxRunner выполняет fn в одной транзакции; Store внутри привязан к ней.
@@ -340,4 +342,40 @@ func (k *keyedMutex) release(key int64, e *keyedEntry) {
 	if e.refs--; e.refs == 0 {
 		delete(k.m, key)
 	}
+}
+
+// LockRoster берёт advisory-lock пространства до конца транзакции из ctx — тот
+// же, под которым идут вступления и выходы. Нужен публикации распределения:
+// после неё состав уже не меняется.
+func (s *Service) LockRoster(ctx context.Context, splitID int64) error {
+	if err := s.store.LockSplit(ctx, splitID); err != nil {
+		return fmt.Errorf("member.Service.LockRoster: %w", err)
+	}
+	return nil
+}
+
+// Candidates отдаёт участников со снимками анкет для распределения.
+func (s *Service) Candidates(ctx context.Context, splitID int64) ([]Member, error) {
+	list, err := s.store.List(ctx, splitID)
+	if err != nil {
+		return nil, fmt.Errorf("member.Service.Candidates: %w", err)
+	}
+	return list, nil
+}
+
+// Assign записывает команды и роли, назначенные распределением.
+func (s *Service) Assign(ctx context.Context, splitID int64, placements []Placement) error {
+	if err := s.store.Assign(ctx, splitID, placements); err != nil {
+		return fmt.Errorf("member.Service.Assign: %w", err)
+	}
+	return nil
+}
+
+// Assignments отдаёт размещение участников без анкет (для модуля team).
+func (s *Service) Assignments(ctx context.Context, splitID int64) ([]Assignment, error) {
+	list, err := s.store.ListAssignments(ctx, splitID)
+	if err != nil {
+		return nil, fmt.Errorf("member.Service.Assignments: %w", err)
+	}
+	return list, nil
 }

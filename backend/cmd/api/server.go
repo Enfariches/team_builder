@@ -10,10 +10,12 @@ import (
 
 	"builder/backend/internal/api/gen"
 	"builder/backend/internal/auth"
+	"builder/backend/internal/distribution"
 	"builder/backend/internal/form"
 	"builder/backend/internal/invite"
 	"builder/backend/internal/member"
 	"builder/backend/internal/split"
+	"builder/backend/internal/team"
 	"builder/backend/internal/user"
 )
 
@@ -30,6 +32,9 @@ type (
 	formAPI   = form.Handler
 	inviteAPI = invite.Handler
 	memberAPI = member.Handler
+
+	distributionAPI = distribution.Handler
+	teamAPI         = team.Handler
 )
 
 type apiServer struct {
@@ -40,6 +45,8 @@ type apiServer struct {
 	*formAPI
 	*inviteAPI
 	*memberAPI
+	*distributionAPI
+	*teamAPI
 	pool *pgxpool.Pool
 }
 
@@ -200,26 +207,43 @@ func (p hubPublisher) MembersChanged(splitID int64, membersCount int) {
 	p.hub.Publish(splitID, split.NewEvent("member_joined", map[string]int{"membersCount": membersCount}))
 }
 
-// splitMembershipAdapter отдаёт модулю split участников и счётчики из member.
-// Число команд даст модуль team, пока оно nil.
-type splitMembershipAdapter struct{ svc *member.Service }
+// splitMembershipAdapter отдаёт модулю split участников из member и число
+// команд из team. teams проставляется при сборке в main: team читает
+// пространство через split, а split — число команд из team.
+type splitMembershipAdapter struct {
+	svc   *member.Service
+	teams interface {
+		Counts(ctx context.Context, splitIDs []int64) (map[int64]int, error)
+	}
+}
 
-func (a splitMembershipAdapter) IsMember(ctx context.Context, splitID, userID int64) (bool, error) {
+func (a *splitMembershipAdapter) IsMember(ctx context.Context, splitID, userID int64) (bool, error) {
 	return a.svc.IsMember(ctx, splitID, userID)
 }
 
-func (a splitMembershipAdapter) SplitIDsOfUser(ctx context.Context, userID int64) ([]int64, error) {
+func (a *splitMembershipAdapter) SplitIDsOfUser(ctx context.Context, userID int64) ([]int64, error) {
 	return a.svc.SplitIDsOfUser(ctx, userID)
 }
 
-func (a splitMembershipAdapter) Stats(ctx context.Context, splitIDs []int64) (map[int64]split.Stats, error) {
+// Stats: TeamsCount заполняется только у пространств, где команды уже есть
+// (после публикации), у остальных остаётся nil, как требует контракт.
+func (a *splitMembershipAdapter) Stats(ctx context.Context, splitIDs []int64) (map[int64]split.Stats, error) {
 	counts, err := a.svc.Counts(ctx, splitIDs)
+	if err != nil {
+		return nil, fmt.Errorf("splitMembershipAdapter.Stats: %w", err)
+	}
+	teams, err := a.teams.Counts(ctx, splitIDs)
 	if err != nil {
 		return nil, fmt.Errorf("splitMembershipAdapter.Stats: %w", err)
 	}
 	out := make(map[int64]split.Stats, len(counts))
 	for id, n := range counts {
 		out[id] = split.Stats{MembersCount: n}
+	}
+	for id, n := range teams {
+		st := out[id]
+		st.TeamsCount = &n
+		out[id] = st
 	}
 	return out, nil
 }

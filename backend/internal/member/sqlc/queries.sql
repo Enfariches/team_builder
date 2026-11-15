@@ -34,3 +34,22 @@ SELECT EXISTS (SELECT 1 FROM members WHERE split_id = $1 AND user_id = $2);
 
 -- name: DeleteMember :execrows
 DELETE FROM members WHERE id = $1;
+
+-- name: AssignMembers :execrows
+-- Одно обращение на всех участников публикации: id, команда и роль идут
+-- параллельными массивами и склеиваются по порядковому номеру.
+UPDATE members SET
+    team_id       = u.team_id,
+    assigned_role = u.role,
+    updated_at    = now()
+FROM (
+    SELECT i.id, t.team_id, r.role
+    FROM unnest(sqlc.arg(ids)::bigint[]) WITH ORDINALITY AS i(id, n)
+    JOIN unnest(sqlc.arg(team_ids)::bigint[]) WITH ORDINALITY AS t(team_id, n) USING (n)
+    JOIN unnest(sqlc.arg(roles)::text[]) WITH ORDINALITY AS r(role, n) USING (n)
+) AS u
+WHERE members.id = u.id AND members.split_id = sqlc.arg(split_id);
+
+-- name: ListMemberAssignments :many
+-- Без form_snapshot: модуль team получает только состав, не анкеты.
+SELECT id, user_id, team_id, assigned_role FROM members WHERE split_id = $1 ORDER BY id;

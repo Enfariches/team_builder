@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -186,7 +187,7 @@ func TestJoinRaceOnPostgres(t *testing.T) {
 	type applicant struct{ userID, formID int64 }
 	applicants := make([]applicant, attempts)
 	for i := range applicants {
-		uid := newUser(t, pool, "s"+itoa(int64(i)))
+		uid := newUser(t, pool, fmt.Sprintf("s%d", i))
 		applicants[i] = applicant{userID: uid, formID: newForm(t, pool, uid)}
 	}
 

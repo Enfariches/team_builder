@@ -11,22 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	memberdb "builder/backend/internal/member/sqlc/db"
+	"builder/backend/internal/platform"
 )
 
 const uniqueViolation = "23505"
 
 type Repository struct {
-	q *memberdb.Queries
+	db memberdb.DBTX
 }
 
 func NewRepository(db memberdb.DBTX) *Repository {
-	return &Repository{q: memberdb.New(db)}
+	return &Repository{db: db}
+}
+
+// q берёт транзакцию из ctx (общая транзакция публикации распределения),
+// а если её нет — работает на соединении, с которым создан репозиторий.
+func (r *Repository) q(ctx context.Context) *memberdb.Queries {
+	return memberdb.New(platform.DB(ctx, r.db))
 }
 
 // LockSplit берёт advisory-lock до конца транзакции; вне транзакции он
 // отпустится сразу же, поэтому вызывать только внутри PgTxRunner.Run.
 func (r *Repository) LockSplit(ctx context.Context, splitID int64) error {
-	if err := r.q.LockSplit(ctx, splitID); err != nil {
+	if err := r.q(ctx).LockSplit(ctx, splitID); err != nil {
 		return fmt.Errorf("member.repository.LockSplit: %w", err)
 	}
 	return nil
@@ -38,7 +45,7 @@ func (r *Repository) Insert(ctx context.Context, n NewMember) (Member, error) {
 		return Member{}, fmt.Errorf("member.repository.Insert: marshal snapshot: %w", err)
 	}
 	formID := n.FormID
-	row, err := r.q.InsertMember(ctx, memberdb.InsertMemberParams{
+	row, err := r.q(ctx).InsertMember(ctx, memberdb.InsertMemberParams{
 		SplitID: n.SplitID, UserID: n.UserID, FormID: &formID, FormSnapshot: raw,
 	})
 	var pgErr *pgconn.PgError
@@ -52,7 +59,7 @@ func (r *Repository) Insert(ctx context.Context, n NewMember) (Member, error) {
 }
 
 func (r *Repository) Get(ctx context.Context, id int64) (Member, error) {
-	row, err := r.q.GetMember(ctx, id)
+	row, err := r.q(ctx).GetMember(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, ErrNotFound
 	}
@@ -63,7 +70,7 @@ func (r *Repository) Get(ctx context.Context, id int64) (Member, error) {
 }
 
 func (r *Repository) GetByUser(ctx context.Context, splitID, userID int64) (Member, error) {
-	row, err := r.q.GetMemberByUser(ctx, memberdb.GetMemberByUserParams{SplitID: splitID, UserID: userID})
+	row, err := r.q(ctx).GetMemberByUser(ctx, memberdb.GetMemberByUserParams{SplitID: splitID, UserID: userID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Member{}, ErrNotFound
 	}
@@ -74,7 +81,7 @@ func (r *Repository) GetByUser(ctx context.Context, splitID, userID int64) (Memb
 }
 
 func (r *Repository) List(ctx context.Context, splitID int64) ([]Member, error) {
-	rows, err := r.q.ListMembersBySplit(ctx, splitID)
+	rows, err := r.q(ctx).ListMembersBySplit(ctx, splitID)
 	if err != nil {
 		return nil, fmt.Errorf("member.repository.List: %w", err)
 	}
@@ -88,7 +95,7 @@ func (r *Repository) List(ctx context.Context, splitID int64) ([]Member, error) 
 }
 
 func (r *Repository) Count(ctx context.Context, splitID int64) (int, error) {
-	n, err := r.q.CountMembersBySplit(ctx, splitID)
+	n, err := r.q(ctx).CountMembersBySplit(ctx, splitID)
 	if err != nil {
 		return 0, fmt.Errorf("member.repository.Count: %w", err)
 	}
@@ -99,7 +106,7 @@ func (r *Repository) Counts(ctx context.Context, splitIDs []int64) (map[int64]in
 	if splitIDs == nil {
 		splitIDs = []int64{}
 	}
-	rows, err := r.q.CountMembersBySplits(ctx, splitIDs)
+	rows, err := r.q(ctx).CountMembersBySplits(ctx, splitIDs)
 	if err != nil {
 		return nil, fmt.Errorf("member.repository.Counts: %w", err)
 	}
@@ -111,7 +118,7 @@ func (r *Repository) Counts(ctx context.Context, splitIDs []int64) (map[int64]in
 }
 
 func (r *Repository) SplitIDsOfUser(ctx context.Context, userID int64) ([]int64, error) {
-	ids, err := r.q.SplitIDsOfUser(ctx, userID)
+	ids, err := r.q(ctx).SplitIDsOfUser(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("member.repository.SplitIDsOfUser: %w", err)
 	}
@@ -119,7 +126,7 @@ func (r *Repository) SplitIDsOfUser(ctx context.Context, userID int64) ([]int64,
 }
 
 func (r *Repository) IsMember(ctx context.Context, splitID, userID int64) (bool, error) {
-	ok, err := r.q.IsMember(ctx, memberdb.IsMemberParams{SplitID: splitID, UserID: userID})
+	ok, err := r.q(ctx).IsMember(ctx, memberdb.IsMemberParams{SplitID: splitID, UserID: userID})
 	if err != nil {
 		return false, fmt.Errorf("member.repository.IsMember: %w", err)
 	}
@@ -127,7 +134,7 @@ func (r *Repository) IsMember(ctx context.Context, splitID, userID int64) (bool,
 }
 
 func (r *Repository) Delete(ctx context.Context, id int64) error {
-	n, err := r.q.DeleteMember(ctx, id)
+	n, err := r.q(ctx).DeleteMember(ctx, id)
 	if err != nil {
 		return fmt.Errorf("member.repository.Delete: %w", err)
 	}
@@ -135,6 +142,41 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// Assign пишет команды и роли одним запросом. Число затронутых строк должно
+// совпасть: расхождение значит, что участник исчез или чужой, и публикацию
+// надо откатить.
+func (r *Repository) Assign(ctx context.Context, splitID int64, placements []Placement) error {
+	if len(placements) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(placements))
+	teamIDs := make([]int64, len(placements))
+	roles := make([]string, len(placements))
+	for i, p := range placements {
+		ids[i], teamIDs[i], roles[i] = p.MemberID, p.TeamID, p.Role
+	}
+	n, err := r.q(ctx).AssignMembers(ctx, memberdb.AssignMembersParams{SplitID: splitID, Ids: ids, TeamIds: teamIDs, Roles: roles})
+	if err != nil {
+		return fmt.Errorf("member.repository.Assign: %w", err)
+	}
+	if int(n) != len(placements) {
+		return fmt.Errorf("member.repository.Assign: updated %d of %d members", n, len(placements))
+	}
+	return nil
+}
+
+func (r *Repository) ListAssignments(ctx context.Context, splitID int64) ([]Assignment, error) {
+	rows, err := r.q(ctx).ListMemberAssignments(ctx, splitID)
+	if err != nil {
+		return nil, fmt.Errorf("member.repository.ListAssignments: %w", err)
+	}
+	out := make([]Assignment, len(rows))
+	for i, row := range rows {
+		out[i] = Assignment{MemberID: row.ID, UserID: row.UserID, TeamID: row.TeamID, Role: row.AssignedRole}
+	}
+	return out, nil
 }
 
 // snapshotJSON — формат form_snapshot в БД. Отделён от доменного типа, чтобы
@@ -189,6 +231,10 @@ type PgTxRunner struct {
 func NewPgTxRunner(pool *pgxpool.Pool) *PgTxRunner { return &PgTxRunner{pool: pool} }
 
 func (p *PgTxRunner) Run(ctx context.Context, fn func(Store) error) (err error) {
+	// уже внутри общей транзакции: репозиторий сам возьмёт её из ctx
+	if platform.InTx(ctx) {
+		return fn(NewRepository(p.pool))
+	}
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("member.PgTxRunner.Run: begin tx: %w", err)

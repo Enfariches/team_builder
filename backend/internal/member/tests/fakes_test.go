@@ -129,6 +129,34 @@ func (m *memStore) Delete(_ context.Context, id int64) error {
 	return nil
 }
 
+func (m *memStore) Assign(_ context.Context, split int64, ps []member.Placement) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range ps {
+		mm, ok := m.members[p.MemberID]
+		if !ok || mm.SplitID != split {
+			return member.ErrNotFound
+		}
+		team, role := p.TeamID, p.Role
+		mm.TeamID, mm.AssignedRole = &team, &role
+		m.members[p.MemberID] = mm
+	}
+	return nil
+}
+
+func (m *memStore) ListAssignments(_ context.Context, split int64) ([]member.Assignment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []member.Assignment
+	for _, x := range m.members {
+		if x.SplitID == split {
+			out = append(out, member.Assignment{MemberID: x.ID, UserID: x.UserID, TeamID: x.TeamID, Role: x.AssignedRole})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].MemberID < out[j].MemberID })
+	return out, nil
+}
+
 type fakeInvites struct {
 	mu        sync.Mutex
 	redeemErr error
