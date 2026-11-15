@@ -1,19 +1,20 @@
 # Чеклист готовности backend
 
-Составлен по `api/openapi.yaml` (36 операций). Отмечено сделанное на 2026-10-26, после `invite` обновлено.
+Составлен по `api/openapi.yaml` (36 операций). Отмечено сделанное на 2026-10-26, после `invite` и `member` обновлено.
 
 ## Итог
 
 | Метрика | Значение |
 |---|---|
-| Операций API реализовано | 23 из 36 (64%) |
-| Готовность с учётом сложности | ≈ 48% |
+| Операций API реализовано | 28 из 36 (78%) |
+| Готовность с учётом сложности | ≈ 62% |
 
 Оценка по сложности: веса модулей — auth 4, users 2, forms 5, splits 9 (правила
 состава, переходы статусов, SSE), invites 4, members 8, distribution 12
 (алгоритм и property-based тесты), teams 3, health 0.5, тестовая обвязка 2.
-Готово 23.6 из ≈ 49.5: `split` засчитан на 90% (веса: 9 × 0.9), пока нет событий
-`member_joined` и `distribution_published` и реальных участников.
+Готово ≈ 30.9 из ≈ 49.5: `split` засчитан на 95% (нет только события
+`distribution_published`), `member` — на 85% (8 × 0.85: `PATCH /members/{memberId}`
+сознательно отложен).
 
 ## Инфраструктура
 
@@ -65,8 +66,9 @@
 - [x] `DELETE /splits/{splitId}`
 - [x] `POST /splits/{splitId}/status` (Draft → Open → Closed → Open)
 - [x] `GET /splits/{splitId}/stream` (SSE: `status_changed`, `ping`)
-- [ ] События `member_joined` и `distribution_published` (публикуют `member` и `distribution` через `Hub`)
-- [ ] Реальные участники вместо заглушки `memberStub` (`membersCount`, `myRole=Member`, доступ участника)
+- [x] Событие `member_joined` (публикует `member` через `Hub`)
+- [ ] Событие `distribution_published` (опубликует `distribution` через `Hub`)
+- [x] Реальные участники вместо заглушки `memberStub` (`membersCount`, `myRole=Member`, доступ участника)
 
 ## Invites — 4/4
 
@@ -77,15 +79,17 @@
 - [x] `GET /invites/{token}` (предпросмотр)
 - [x] `Service.Redeem` / `Release` (атомарный счётчик) для `member`, подключит он через свой порт
 
-## Members — 0/6
+## Members — 5/6
 
-- [ ] Миграция `members` (`UNIQUE(split_id, user_id)`, `team_id` и `assigned_role` nullable, `form_snapshot` jsonb)
-- [ ] `POST /members/join` (заморозка анкеты в снимок)
-- [ ] `GET /splits/{splitId}/members` (анкеты видны только владельцу)
-- [ ] `GET /splits/{splitId}/members/me`
-- [ ] `DELETE /splits/{splitId}/members/me`
-- [ ] `PATCH /members/{memberId}`
-- [ ] `DELETE /members/{memberId}`
+- [x] Миграция `members` (`UNIQUE(split_id, user_id)`, `team_id` и `assigned_role` nullable, `form_snapshot` jsonb)
+- [x] `POST /members/join` (заморозка анкеты в снимок; возврат использования инвайта при отказе)
+- [x] `GET /splits/{splitId}/members` (анкеты видны только владельцу)
+- [x] `GET /splits/{splitId}/members/me`
+- [x] `DELETE /splits/{splitId}/members/me`
+- [ ] `PATCH /members/{memberId}` — отложено: ручной перенос между командами сознательно не делается до MVP (CLAUDE.md)
+- [x] `DELETE /members/{memberId}`
+- [x] Сериализация вступлений: `pg_advisory_xact_lock(split_id)` + мьютекс в памяти; `distribution.publish` должен брать тот же lock (`SELECT pg_advisory_xact_lock(split_id)` до проверки статуса)
+- [ ] Для `distribution`: метод `ListCandidates` (снимки анкет) и FK `members.team_id → teams.id` (в миграции модуля `team`)
 
 ## Distribution — 0/3
 
@@ -109,6 +113,7 @@
 - [x] user: юнит, HTTP-разбор тела, интеграционные
 - [ ] HTTP-слой auth (cookie, middleware) автотестами
 - [x] split: правила состава (в том числе сверка с перебором), статусы, доступ, HTTP, SSE, Postgres, гонка смены статуса
+- [x] member: домен, сервис (в том числе гонка вступлений и отмена ожидания), HTTP и приватность анкет, Postgres (каскады, снимок, гонка при пуле в 4 соединения)
 - [ ] Остальные модули
 
 ## Известные долги

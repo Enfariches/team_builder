@@ -19,6 +19,7 @@ import (
 	"builder/backend/internal/auth"
 	"builder/backend/internal/form"
 	"builder/backend/internal/invite"
+	"builder/backend/internal/member"
 	"builder/backend/internal/platform"
 	"builder/backend/internal/split"
 	"builder/backend/internal/user"
@@ -65,10 +66,22 @@ func run(log *slog.Logger, cfg platform.Config) error {
 		<-ctx.Done()
 		hub.Close()
 	}()
-	splitSvc := split.NewService(split.NewRepository(pool), split.NewPgTxRunner(pool), memberStub{}, memberStub{}, hub)
-
 	formSvc := form.NewService(form.NewRepository(pool))
+
+	// split и member нужны друг другу при сборке; цикл замыкается после
+	// создания split.Service, пакеты при этом друг друга не импортируют
+	splitReader := &memberSplitReader{}
+	inviteRedeemer := &inviteRedeemerAdapter{}
+	memberSvc := member.NewService(
+		member.NewRepository(pool), member.NewPgTxRunner(pool),
+		inviteRedeemer, formSnapshotAdapter{formSvc}, splitReader, userDirectoryAdapter{userSvc}, hubPublisher{hub},
+	)
+	membership := splitMembershipAdapter{memberSvc}
+	splitSvc := split.NewService(split.NewRepository(pool), split.NewPgTxRunner(pool), membership, membership, hub)
+	splitReader.svc = splitSvc
+
 	inviteSvc := invite.NewService(invite.NewRepository(pool), splitAccessAdapter{splitSvc}, splitInfoAdapter{splitSvc})
+	inviteRedeemer.svc = inviteSvc
 
 	swagger, err := gen.GetSwagger()
 	if err != nil {
@@ -81,6 +94,7 @@ func run(log *slog.Logger, cfg platform.Config) error {
 		splitAPI:  split.NewHandler(splitSvc, hub, auth.Identity{}, split.DefaultPingInterval),
 		formAPI:   form.NewHandler(formSvc, auth.Identity{}),
 		inviteAPI: invite.NewHandler(inviteSvc, auth.Identity{}, cfg.InviteBaseURL),
+		memberAPI: member.NewHandler(memberSvc, auth.Identity{}),
 		pool:      pool,
 	}
 	strict := gen.NewStrictHandler(srv, []gen.StrictMiddlewareFunc{
@@ -88,7 +102,7 @@ func run(log *slog.Logger, cfg platform.Config) error {
 	})
 
 	e := echo.New()
-	e.HTTPErrorHandler = platform.NewErrorHandler(log, slices.Concat(auth.HTTPErrors, user.HTTPErrors, split.HTTPErrors, form.HTTPErrors, invite.HTTPErrors)...)
+	e.HTTPErrorHandler = platform.NewErrorHandler(log, slices.Concat(auth.HTTPErrors, user.HTTPErrors, split.HTTPErrors, form.HTTPErrors, invite.HTTPErrors, member.HTTPErrors)...)
 	e.Use(middleware.RequestID(), platform.RequestLogger(log), middleware.Recover())
 	if len(cfg.CORSOrigins) > 0 {
 		e.Use(middleware.CORSWithConfig(middleware.CORSConfig{

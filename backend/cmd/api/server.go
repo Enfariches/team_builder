@@ -12,6 +12,7 @@ import (
 	"builder/backend/internal/auth"
 	"builder/backend/internal/form"
 	"builder/backend/internal/invite"
+	"builder/backend/internal/member"
 	"builder/backend/internal/split"
 	"builder/backend/internal/user"
 )
@@ -28,6 +29,7 @@ type (
 	splitAPI  = split.Handler
 	formAPI   = form.Handler
 	inviteAPI = invite.Handler
+	memberAPI = member.Handler
 )
 
 type apiServer struct {
@@ -37,6 +39,7 @@ type apiServer struct {
 	*splitAPI
 	*formAPI
 	*inviteAPI
+	*memberAPI
 	pool *pgxpool.Pool
 }
 
@@ -117,17 +120,108 @@ func mapUserErr(op string, err error) error {
 	}
 }
 
-// memberStub — временная реализация портов split, пока нет модуля member:
-// участников нет, поэтому доступ есть только у владельцев.
-// TODO(member): заменить реализацией из модуля member.
-type memberStub struct{}
+// memberSplitReader отдаёт модулю member сведения о пространстве. svc
+// проставляется после создания split.Service: split и member нужны друг другу
+// при сборке, хотя пакеты друг друга не импортируют.
+type memberSplitReader struct{ svc *split.Service }
 
-func (memberStub) IsMember(context.Context, int64, int64) (bool, error) { return false, nil }
+func (a *memberSplitReader) SplitInfo(ctx context.Context, splitID int64) (member.SplitInfo, error) {
+	sp, err := a.svc.Info(ctx, splitID)
+	if errors.Is(err, split.ErrNotFound) {
+		return member.SplitInfo{}, fmt.Errorf("memberSplitReader.SplitInfo: %w (%w)", member.ErrSplitNotFound, err)
+	}
+	if err != nil {
+		return member.SplitInfo{}, fmt.Errorf("memberSplitReader.SplitInfo: %w", err)
+	}
+	return member.SplitInfo{OwnerID: sp.OwnerID, Status: string(sp.Status), MaxMembers: sp.MaxMembers}, nil
+}
 
-func (memberStub) SplitIDsOfUser(context.Context, int64) ([]int64, error) { return nil, nil }
+// inviteRedeemerAdapter переводит invite.Service в порт InviteRedeemer; svc
+// проставляется при сборке в main (см. memberSplitReader).
+type inviteRedeemerAdapter struct{ svc *invite.Service }
 
-func (memberStub) Stats(context.Context, []int64) (map[int64]split.Stats, error) {
-	return map[int64]split.Stats{}, nil
+func (a *inviteRedeemerAdapter) Redeem(ctx context.Context, token string) (member.Redemption, error) {
+	r, err := a.svc.Redeem(ctx, token)
+	if errors.Is(err, invite.ErrInviteInvalid) {
+		return member.Redemption{}, fmt.Errorf("inviteRedeemerAdapter.Redeem: %w (%w)", member.ErrInviteInvalid, err)
+	}
+	if err != nil {
+		return member.Redemption{}, fmt.Errorf("inviteRedeemerAdapter.Redeem: %w", err)
+	}
+	return member.Redemption{InviteID: r.InviteID, SplitID: r.SplitID}, nil
+}
+
+func (a *inviteRedeemerAdapter) Release(ctx context.Context, inviteID int64) error {
+	if err := a.svc.Release(ctx, inviteID); err != nil {
+		return fmt.Errorf("inviteRedeemerAdapter.Release: %w", err)
+	}
+	return nil
+}
+
+// formSnapshotAdapter переводит form.Service в порт FormSnapshotter.
+type formSnapshotAdapter struct{ svc *form.Service }
+
+func (a formSnapshotAdapter) Snapshot(ctx context.Context, userID, formID int64) (member.FormSnapshot, error) {
+	sn, err := a.svc.Snapshot(ctx, userID, formID)
+	if errors.Is(err, form.ErrNotFound) {
+		return member.FormSnapshot{}, fmt.Errorf("formSnapshotAdapter.Snapshot: %w (%w)", member.ErrFormNotFound, err)
+	}
+	if err != nil {
+		return member.FormSnapshot{}, fmt.Errorf("formSnapshotAdapter.Snapshot: %w", err)
+	}
+	prefs := make([]member.RolePreference, len(sn.RolePreferences))
+	for i, p := range sn.RolePreferences {
+		prefs[i] = member.RolePreference{RoleName: p.RoleName, Rank: p.Rank}
+	}
+	return member.FormSnapshot{
+		Experience: sn.Experience, Skills: sn.Skills, RolePreferences: prefs, Comment: sn.Comment,
+	}, nil
+}
+
+// userDirectoryAdapter переводит user.Service в порт UserDirectory.
+type userDirectoryAdapter struct{ svc *user.Service }
+
+func (a userDirectoryAdapter) ListBriefs(ctx context.Context, ids []int64) ([]member.UserBrief, error) {
+	users, err := a.svc.ListBriefs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("userDirectoryAdapter.ListBriefs: %w", err)
+	}
+	out := make([]member.UserBrief, len(users))
+	for i, u := range users {
+		out[i] = member.UserBrief{ID: u.ID, FirstName: u.FirstName, LastName: u.LastName, Link: u.Link}
+	}
+	return out, nil
+}
+
+// hubPublisher публикует смену состава в SSE-поток пространства.
+type hubPublisher struct{ hub *split.Hub }
+
+func (p hubPublisher) MembersChanged(splitID int64, membersCount int) {
+	p.hub.Publish(splitID, split.NewEvent("member_joined", map[string]int{"membersCount": membersCount}))
+}
+
+// splitMembershipAdapter отдаёт модулю split участников и счётчики из member.
+// Число команд даст модуль team, пока оно nil.
+type splitMembershipAdapter struct{ svc *member.Service }
+
+func (a splitMembershipAdapter) IsMember(ctx context.Context, splitID, userID int64) (bool, error) {
+	return a.svc.IsMember(ctx, splitID, userID)
+}
+
+func (a splitMembershipAdapter) SplitIDsOfUser(ctx context.Context, userID int64) ([]int64, error) {
+	return a.svc.SplitIDsOfUser(ctx, userID)
+}
+
+func (a splitMembershipAdapter) Stats(ctx context.Context, splitIDs []int64) (map[int64]split.Stats, error) {
+	counts, err := a.svc.Counts(ctx, splitIDs)
+	if err != nil {
+		return nil, fmt.Errorf("splitMembershipAdapter.Stats: %w", err)
+	}
+	out := make(map[int64]split.Stats, len(counts))
+	for id, n := range counts {
+		out[id] = split.Stats{MembersCount: n}
+	}
+	return out, nil
 }
 
 // splitAccessAdapter переводит split.Service в порт SplitAccess модуля invite.
